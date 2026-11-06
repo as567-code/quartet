@@ -87,6 +87,82 @@ def test_events_are_append_only_for_app_role(app_engine, seeded_task):
             c.execute(sa.text(stmt))
 
 
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "INSERT INTO events (id, task_id, type, payload) VALUES (999, :t, 'x', '{}')",
+        "INSERT INTO events (task_id, type, payload, created_at) "
+        "VALUES (:t, 'x', '{}', '2000-01-01T00:00:00Z')",
+    ],
+    ids=["explicit_id", "explicit_created_at"],
+)
+def test_app_role_cannot_stamp_event_id_or_created_at(app_engine, seeded_task, stmt):
+    with (
+        pytest.raises(sa.exc.ProgrammingError, match="permission denied"),
+        app_engine.begin() as c,
+    ):
+        c.execute(sa.text(stmt), {"t": seeded_task})
+
+
+def test_event_id_and_created_at_are_db_stamped(app_engine, seeded_task):
+    from sqlalchemy.orm import Session
+
+    from quartet.db.models import Event
+    from quartet.db.repository import append_event
+    from quartet.domain.states import TaskState
+    from quartet.domain.transitions import transition
+
+    with Session(app_engine) as s, s.begin():
+        eid = append_event(s, seeded_task, "note", {"a": 1})
+        transition(s, seeded_task, TaskState.QUEUED, TaskState.SCOPING, 0, "moved")
+        db_now = s.execute(sa.text("SELECT now()")).scalar_one()
+    with Session(app_engine) as s:
+        rows = s.query(Event).order_by(Event.id).all()
+        assert [r.type for r in rows] == ["note", "moved"] and rows[0].id == eid
+        assert all(r.id is not None and r.created_at == db_now for r in rows)
+
+
+def test_events_task_id_is_nullable_but_still_a_foreign_key(app_engine):
+    ins = sa.text("INSERT INTO events (task_id, type, payload) VALUES (:t, 'worker', '{}')")
+    with app_engine.begin() as c:
+        c.execute(ins, {"t": None})
+    with pytest.raises(sa.exc.IntegrityError), app_engine.begin() as c:
+        c.execute(ins, {"t": uuid.uuid4()})
+    with app_engine.connect() as c:
+        assert (
+            c.execute(
+                sa.text("SELECT count(*) FROM events WHERE task_id IS NULL AND type = 'worker'")
+            ).scalar_one()
+            == 1
+        )
+
+
+# Tables quartet_app must never UPDATE or DELETE. Default privileges grant DML on every new
+# table, so a new append-only table must REVOKE explicitly AND be listed here.
+APPEND_ONLY = {"events"}
+READ_ONLY = {"alembic_version"}  # migrator-owned bookkeeping; the app may only SELECT it
+
+
+def test_app_role_lacks_update_delete_on_exactly_the_append_only_tables(fresh_db):
+    eng = sa.create_engine(fresh_db.migrator_url)
+    try:
+        with eng.connect() as c:
+            rows = c.execute(
+                sa.text(
+                    "SELECT tablename, "
+                    "has_table_privilege('quartet_app', 'public.' || tablename, 'UPDATE') AS u, "
+                    "has_table_privilege('quartet_app', 'public.' || tablename, 'DELETE') AS d "
+                    "FROM pg_tables WHERE schemaname = 'public'"
+                )
+            ).all()
+    finally:
+        eng.dispose()
+    lacking = {r.tablename for r in rows if not r.u and not r.d}
+    full = {r.tablename for r in rows if r.u and r.d}
+    assert lacking == APPEND_ONLY | READ_ONLY
+    assert full == {r.tablename for r in rows} - APPEND_ONLY - READ_ONLY
+
+
 def test_migration_round_trip(fresh_db, alembic_config):
     cfg = alembic_config(fresh_db.migrator_url)
     command.downgrade(cfg, "base")

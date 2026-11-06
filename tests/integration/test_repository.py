@@ -146,6 +146,19 @@ def test_append_event_returns_id(app_session, seeded_task):
     assert app_session.get(Event, first).payload == {"a": 1}
 
 
+def test_append_event_without_a_task(app_session):
+    eid = append_event(app_session, None, "worker_started", {"worker": "w1"})
+    row = app_session.get(Event, eid)
+    assert row.task_id is None and row.payload == {"worker": "w1"}
+
+
+def test_append_event_rejects_oversized_payload_without_echo(app_session, seeded_task):
+    with pytest.raises(ValueError, match="65536") as exc:
+        append_event(app_session, seeded_task, "note", {"blob": "s3cr3t" + "x" * 70_000})
+    assert "s3cr3t" not in str(exc.value)
+    assert app_session.execute(sa.text("SELECT count(*) FROM events")).scalar_one() == 0
+
+
 def _minimal(kind: str) -> BaseModel:
     ctor: dict[str, Callable[[], BaseModel]] = {
         "plan": lambda: Plan.model_validate(

@@ -289,7 +289,7 @@ def upgrade() -> None:
     op.create_table(
         "events",
         sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
-        _fk("task_id", "tasks.id"),
+        _fk("task_id", "tasks.id", nullable=True),  # task-less worker/kill-switch events
         _str("type"),
         _json("payload"),
         _ts("created_at"),
@@ -334,7 +334,10 @@ def upgrade() -> None:
         "ALTER DEFAULT PRIVILEGES FOR ROLE quartet_migrator IN SCHEMA public "
         "GRANT USAGE, SELECT ON SEQUENCES TO quartet_app"
     )
-    op.execute("REVOKE UPDATE, DELETE, TRUNCATE ON events FROM quartet_app")
+    # events is append-only and DB-stamped: the app may insert only these three columns, so
+    # `id` (bigserial) and `created_at` (now()) always come from the database.
+    op.execute("REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON events FROM quartet_app")
+    op.execute("GRANT INSERT (task_id, type, payload) ON events TO quartet_app")
     # The blanket GRANT above also covered alembic_version; the app role may only read it.
     op.execute("REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON alembic_version FROM quartet_app")
 

@@ -13,6 +13,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
+from quartet.domain.events import check_event_payload
 from quartet.domain.states import TaskState
 
 S = TaskState
@@ -93,10 +94,13 @@ def transition(
 ) -> int:
     """Move a task ``from_`` -> ``to`` iff it is still at ``expected_version``; return the new one.
 
-    Raises ``IllegalTransition`` (bad edge / wrong resume target) or ``StaleTransition``
-    (lost the race). Does not commit.
+    Raises ``IllegalTransition`` (bad edge / wrong resume target), ``StaleTransition`` (lost
+    the race) or ``ValueError`` (event payload over the size cap, raised before any SQL).
+    Does not commit. Lease-agnostic by design: lease-less edges (``AWAITING_HUMAN -> MERGED``,
+    CLI actions) use it too; a reaped worker is fenced because reaping bumps ``version``.
     """
     check_transition(from_, to)
+    event_payload = check_event_payload({**(payload or {}), "from": from_.value, "to": to.value})
 
     if from_ is TaskState.NEEDS_HUMAN and to is not TaskState.CLOSED:
         row = session.execute(_LOCK_SQL, {"id": task_id}).one_or_none()
@@ -116,12 +120,5 @@ def transition(
     if new_version is None:
         raise StaleTransition(f"task {task_id} is no longer at {from_.value} v{expected_version}")
 
-    session.execute(
-        _EVENT_SQL,
-        {
-            "id": task_id,
-            "type": event_type,
-            "payload": {**(payload or {}), "from": from_.value, "to": to.value},
-        },
-    )
+    session.execute(_EVENT_SQL, {"id": task_id, "type": event_type, "payload": event_payload})
     return int(new_version)

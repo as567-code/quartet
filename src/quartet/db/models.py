@@ -279,7 +279,8 @@ class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(sa.BigInteger, primary_key=True, autoincrement=True)
-    task_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("tasks.id"), index=True)
+    # Nullable: worker and kill-switch events (Phase 6) belong to no task.
+    task_id: Mapped[uuid.UUID | None] = mapped_column(sa.ForeignKey("tasks.id"), index=True)
     type: Mapped[str]
     payload: Mapped[dict[str, Any]] = mapped_column(postgresql.JSONB, server_default=_EMPTY_JSON)
     created_at: Mapped[datetime] = _created()

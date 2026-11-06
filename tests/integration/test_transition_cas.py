@@ -77,6 +77,25 @@ def test_illegal_transition_raises_before_any_sql(app_session, seeded_task):
     assert not app_session.in_transaction()
 
 
+def test_oversized_event_payload_raises_before_any_sql(app_session, seeded_task):
+    with pytest.raises(ValueError, match="65536") as exc:
+        transition(
+            app_session,
+            seeded_task,
+            TaskState.QUEUED,
+            TaskState.SCOPING,
+            0,
+            "x",
+            {"blob": "s3cr3t" + "x" * 70_000},
+        )
+    assert "s3cr3t" not in str(exc.value)
+    assert not app_session.in_transaction()
+    row = app_session.execute(
+        sa.text("SELECT state, version FROM tasks WHERE id=:t"), {"t": seeded_task}
+    ).one()
+    assert (row.state, row.version) == ("QUEUED", 0)
+
+
 def test_stale_version_raises_and_writes_nothing(app_session, seeded_task):
     n_before = app_session.execute(sa.text("SELECT count(*) FROM events")).scalar_one()
     with pytest.raises(StaleTransition):

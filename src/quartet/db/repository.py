@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from quartet.db.models import Artifact, Event, Handover, Repo, Task
 from quartet.domain.artifacts import ARTIFACT_KINDS, ContextDigest
+from quartet.domain.events import check_event_payload
 from quartet.domain.states import Role, TaskState
 
 TITLE_MAX_BYTES = 512
@@ -92,8 +93,12 @@ def create_task(
     return task.id
 
 
-def append_event(session: Session, task_id: UUID, type_: str, payload: Mapping[str, Any]) -> int:
-    event = Event(task_id=task_id, type=type_, payload=dict(payload))
+def append_event(
+    session: Session, task_id: UUID | None, type_: str, payload: Mapping[str, Any]
+) -> int:
+    """Insert an audit event (``task_id=None`` for task-less events). ``id`` and ``created_at``
+    are stamped by the database. Raises ``ValueError`` if the payload exceeds the size cap."""
+    event = Event(task_id=task_id, type=type_, payload=check_event_payload(payload))
     session.add(event)
     session.flush()
     return event.id
