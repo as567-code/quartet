@@ -23,6 +23,9 @@ quartet = "quartet.cli:app"
 requires = ["uv_build>=0.13.7,<0.14.0"]
 build-backend = "uv_build"
 
+[tool.uv]
+link-mode = "copy"
+
 [tool.uv.workspace]
 members = [
     "packages/quartet-workspace",
@@ -53,7 +56,7 @@ extend-exclude = ["tests/repo_hygiene/fixtures", "docs"]
 select = ["E", "F", "I", "B", "UP", "S", "SIM", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+"tests/**" = ["S101", "S603", "S607"]
 
 [tool.mypy]
 strict = true

@@ -1,12 +1,16 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def _check_ignore(path: str) -> int:
-    return subprocess.run(  # noqa: S603
-        ["git", "check-ignore", "-q", path],  # noqa: S607
+    return subprocess.run(
+        ["git", "check-ignore", "-q", path],
         check=False,
+        cwd=REPO_ROOT,
     ).returncode
 
 
