@@ -48,7 +48,7 @@ S = Spoofing, T = Tampering, R = Repudiation, I = Information disclosure, D = De
 
 | | Threat | Control | Status |
 |---|---|---|---|
-| S | A process impersonates a worker and claims tasks | Workers authenticate to Postgres as `quartet_app` | role exists, implemented (Phase 0); worker identity and lease ownership planned (Phase 1, Phase 6) |
+| S | A process impersonates a worker and claims tasks | Workers authenticate to Postgres as `quartet_app`; lease ownership checks | login role exists (Phase 0); no workers exist yet; claims and lease ownership planned (Phase 1, Phase 6) |
 | T | Illegal state transition or lost update | Compare-and-set transitions against a static table | planned (Phase 1) |
 | T | Hostile `.env` or env-file injects settings | Env file is never read from the cwd; explicit `QUARTET_ENV_FILE` or `~/.quartet/.env`; must be a regular file owned by the user and not group/world-writable | implemented (Phase 0) |
 | T | Hostile DB URL redirects the connection or smuggles libpq options | URL parsed with libpq's own parser; scheme and query keys allowlisted (`sslmode`, `connect_timeout`, `application_name`); `passfile`, `service`, `options` and similar rejected | implemented (Phase 0) |
@@ -83,8 +83,8 @@ No sandbox exists in Phase 0.
 
 | | Threat | Control | Status |
 |---|---|---|---|
-| S | Unauthenticated or remote access to the database | Compose binds `127.0.0.1` only; passwords are random, local and kept in the git-ignored `.env` | implemented (Phase 0) |
-| T | Application role alters the schema or audit log | Role split: `quartet_migrator` owns the schema, `quartet_app` is DML-only; passwords passed through psql variables, not interpolated into SQL text | role split implemented (Phase 0); no UPDATE or DELETE on `events` planned (Phase 1) |
+| S | Unauthenticated or remote access to the database | Compose binds `127.0.0.1` only; passwords are supplied by the owner in the git-ignored `.env` (they were generated randomly when this environment was set up, but the repo contains no generator and no strength check; strength is the owner's responsibility) | implemented (Phase 0) |
+| T | Application role alters the schema or audit log | Role split: `quartet_migrator` owns the database, `quartet_app` is a separate login role; passwords passed through psql variables, not interpolated into SQL text | role split implemented (Phase 0); `quartet_app` currently has no table grants at all; DML-only grants and no UPDATE/DELETE/TRUNCATE on `events`: planned (Phase 1) |
 | T | SQL injection | Bind parameters for DML; DDL composed with `psycopg.sql.SQL`/`Identifier`/`Literal`; semgrep repo rules reject f-string SQL | rules and CI gate implemented (Phase 0); queries themselves arrive in Phase 1 |
 | I | Image or supply-chain compromise of the database image | Image pinned by `@sha256:` digest | implemented (Phase 0) |
 | D | Lease or claim starvation | Database `now()` for expiry; reaper | planned (Phase 1, Phase 6) |
@@ -136,7 +136,9 @@ Stated as they stand at the end of Phase 0:
 
 - **CI has never run on GitHub.** The workflows are statically checked (`actionlint`, `zizmor`) and locally tested, but their behaviour on GitHub-hosted runners, including SHA pins and checksum verification, is unproven until the first push.
 - **macOS external-volume ownership is disabled.** The repository lives on an external volume where file ownership is disabled, so the env-file owner check (uid equals current user) is effectively vacuous there. The permission-bit check still applies. On a normal macOS or Linux volume the ownership check is meaningful.
-- **Local-dev passwords live in `.env`.** They are random and the file is git-ignored and gitleaks-scanned, but anyone who can read the file can use the local database. The database is bound to loopback only.
+- **Local-dev passwords live in `.env`.** They are owner-supplied (generated randomly at setup, but the repo has no generator and no strength check). The file is git-ignored, so `gitleaks git` (which scans commits) does not scan it; it only guards against the file being committed. Anyone who can read the file can use the local database. The database is bound to loopback only.
+- **Postgres superuser password in the container environment.** `docker-compose.yml` passes `POSTGRES_PASSWORD` (and the role passwords) to the container as environment variables, visible through `docker inspect` to anyone with Docker access on the host.
+- **`sslmode=disable` is allowed.** The database-URL allowlist permits `sslmode`, including `disable`. This is acceptable for the loopback-only dev database and would not be for a remote one.
 - **gitleaks allowlist for `docs/plans/`.** The path `^docs/plans/` is allowlisted because the plan contains a deliberately fake token. A real secret committed under that path would not be flagged by gitleaks.
 - **Most of the security model is not built.** The sandbox, MCP server, policy gate, GitHub integration, budgets and red-team suite are planned. Until they exist, no claim in the PRD about agent confinement is a property of the running system.
 - **Prompt injection cannot be fully prevented.** Mitigation relies on capability limits (planned) and a human merge, not on prompting.
@@ -155,9 +157,9 @@ What exists now (not future plans):
 - **Database URL validation.** URLs use scheme `postgresql` or `postgresql+psycopg` and are validated by libpq's own parser against a key allowlist (`sslmode`, `connect_timeout`, `application_name`). Keys such as `passfile`, `service` and `options` are rejected (ruling R22).
 - **Telemetry endpoint.** The OTLP endpoint must be http(s) on a loopback host.
 - **Compose stack.** Images are pinned by digest. Ports bind `127.0.0.1` only. Jaeger is v2.
-- **Postgres roles.** `quartet_migrator` (schema owner) and `quartet_app` (DML) are separate roles; passwords reach psql through variables rather than SQL text.
+- **Postgres roles.** `quartet_migrator` (database owner) and `quartet_app` are separate login roles; passwords reach psql through variables rather than SQL text. No table grants exist yet; the DML-only grants arrive with the Phase 1 migration.
 - **Repository CI (least privilege).** Top-level `permissions: {}`; actions pinned to 40-hex commit SHAs; downloaded binaries checksum-verified; `persist-credentials: false`.
-- **Security scanning.** `gitleaks` (default rules; the only allowlist is the path `^docs/plans/`, because the plan contains a deliberately fake token); `semgrep` with repo rules (no `shell=True`, no `os.system`, no f-string SQL); `bandit`; `pip-audit`; `actionlint` and `zizmor` for workflows; ruff `S` rules.
+- **Security scanning.** `gitleaks git` over commit history (default rules; the only allowlist is the path `^docs/plans/`, because the plan contains a deliberately fake token); `semgrep` with repo rules (no `shell=True`, no `os.system`, no f-string SQL); `bandit`; `pip-audit`; `actionlint` and `zizmor` for workflows; ruff `S` rules.
 
 New assets: the local Postgres instance and its `.env`. New boundaries: the process-to-env-file and process-to-database edges, and the repo-to-CI edge. Not yet present: sandbox, MCP server, agents, GitHub App, policy gate.
 

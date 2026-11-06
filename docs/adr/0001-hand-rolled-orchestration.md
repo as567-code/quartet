@@ -17,7 +17,7 @@ Write the state machine, worker loop, lease handling, hand-over records and reco
 
 - **Temporal.** Durable execution and retries are strong, but it would own exactly the recovery and delegation design the project claims, add a server to operate, and replay semantics differ from the role-checkpoint model (FR-23). Rejected.
 - **LangGraph.** Graph checkpointing overlaps with our checkpoints and hand-overs, and its persistence would become a second source of truth next to Postgres. Rejected as the orchestration owner.
-- **OpenAI Agents SDK.** Ties delegation to one vendor's runtime, while Quartet deliberately uses two vendors. Rejected.
+- **OpenAI Agents SDK.** It can drive non-OpenAI models through adapters, so vendor lock-in is not the reason. It would own delegation, hand-off and recovery semantics, which is the PRD §3 anti-goal, the same core reason as LangGraph and the Claude Agent SDK. Rejected as the orchestration owner.
 - **Claude Agent SDK.** Provides an agent loop with its own tool and permission model, which conflicts with the requirement that agents reach the repo only through the sandboxed MCP server and never hold shell, network or git-push tools (FR-13, FR-14). Rejected as the orchestration owner; the plain Anthropic SDK is used below the core.
 
 ## Consequences

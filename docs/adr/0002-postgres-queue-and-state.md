@@ -14,7 +14,7 @@ Use PostgreSQL 16 as the single store.
 - **Queue:** workers claim tasks with `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING ...`. Lease expiry uses the database `now()`, never the host clock. A reaper clears expired leases and increments `attempt`.
 - **Transitions:** every state change is a compare-and-set on state and version, validated against a static transition table.
 - **Audit:** every transition appends to an immutable, append-only `events` table; the application role has no UPDATE or DELETE on it.
-- **Roles:** `quartet_migrator` owns the schema; `quartet_app` has DML only.
+- **Roles:** `quartet_migrator` owns the database and runs migrations; `quartet_app` is intended to have DML only. Status: the two login roles exist (Phase 0), but no grants exist yet, so `quartet_app` currently has no table privileges. The DML grants, and the revocation of UPDATE/DELETE/TRUNCATE on `events`, arrive with the Phase 1 migration.
 
 ## Alternatives considered
 
