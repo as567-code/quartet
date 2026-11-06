@@ -1,16 +1,6 @@
-from pathlib import Path
-
-import pytest
 from typer.testing import CliRunner
 
 from quartet.cli import app
-
-
-@pytest.fixture(autouse=True)
-def _isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.chdir(tmp_path)  # no developer .env is read
-    for var in ("QUARTET_ADMIN_DATABASE_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
 
 
 def test_version_flag_needs_no_env(monkeypatch):
@@ -34,3 +24,18 @@ def test_doctor_without_database_url_fails_cleanly(monkeypatch):
     r = CliRunner().invoke(app, ["doctor"])
     assert r.exit_code == 1
     assert "QUARTET_DATABASE_URL" in r.output and "Traceback" not in r.output
+
+
+def test_doctor_insecure_env_file_fails_cleanly(monkeypatch, tmp_path):
+    f = tmp_path / "bad.env"
+    f.write_text("QUARTET_DATABASE_URL=postgresql://u:hunter2@h/q\n")
+    f.chmod(0o666)
+    monkeypatch.setenv("QUARTET_ENV_FILE", str(f))
+    r = CliRunner().invoke(app, ["doctor"])
+    assert r.exit_code == 1 and "hunter2" not in r.output and "Traceback" not in r.output
+
+
+def test_doctor_rejected_url_reports_field_only(monkeypatch):
+    monkeypatch.setenv("QUARTET_DATABASE_URL", "mysql://u:hunter2@h/q")
+    r = CliRunner().invoke(app, ["doctor"])
+    assert r.exit_code == 1 and "QUARTET_DATABASE_URL" in r.output and "hunter2" not in r.output

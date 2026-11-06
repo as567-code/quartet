@@ -1,16 +1,5 @@
-from pathlib import Path
-
-import pytest
-
 from quartet.config import load_settings
 from quartet.doctor import redact_url, run_checks
-
-
-@pytest.fixture(autouse=True)
-def _isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.chdir(tmp_path)  # no developer .env is read
-    for var in ("QUARTET_ADMIN_DATABASE_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
 
 
 def test_redact_url():

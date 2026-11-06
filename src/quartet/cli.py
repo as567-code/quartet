@@ -1,10 +1,9 @@
 """Quartet command line interface."""
 
 import typer
-from pydantic import ValidationError
 
 from quartet import __version__
-from quartet.config import load_settings
+from quartet.config import InsecureEnvFile, InvalidSettings, load_settings
 from quartet.doctor import run_checks
 
 app = typer.Typer(help="Quartet: a multi-agent coding orchestrator.", no_args_is_help=True)
@@ -34,9 +33,8 @@ def doctor() -> None:
     """Check that the local environment is ready to run Quartet."""
     try:
         settings = load_settings()
-    except ValidationError as exc:
-        missing = ", ".join(str(e["loc"][0]) for e in exc.errors())
-        typer.echo(f"✗ settings: invalid or missing configuration ({missing})")
+    except (InsecureEnvFile, InvalidSettings) as exc:
+        typer.echo(f"✗ settings: {exc}")
         raise typer.Exit(code=1) from None
     checks = run_checks(settings)
     for check in checks:

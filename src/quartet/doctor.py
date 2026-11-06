@@ -74,7 +74,7 @@ def _check_git() -> Check:
 
 
 def _check_postgres(database_url: str) -> Check:
-    url = database_url.replace("+psycopg", "", 1)
+    url = re.sub(r"^postgresql\+psycopg:", "postgresql:", database_url)
     try:
         parts = urlsplit(url)
         target = f"{parts.hostname or 'localhost'}:{parts.port or 5432}"
