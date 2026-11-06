@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import sqlalchemy as sa
@@ -100,6 +100,36 @@ def test_error_classes_share_base():
     assert issubclass(UntrustedInputTooLarge, UntrustedInputError)
     assert issubclass(UntrustedInputInvalid, UntrustedInputError)
     assert issubclass(UntrustedInputError, ValueError)
+
+
+def test_create_task_rejects_unknown_source_before_any_write(app_session, repo_id):
+    with pytest.raises(ValueError, match="github_issue, suite, manual"):
+        create_task(app_session, repo_id, cast(Any, "bogus"), "r#14", "t", "b")
+    assert not app_session.new
+    assert app_session.execute(sa.text("SELECT count(*) FROM tasks")).scalar_one() == 0
+    assert app_session.execute(sa.text("SELECT count(*) FROM events")).scalar_one() == 0
+
+
+@pytest.mark.parametrize("source", ["github_issue", "suite", "manual"])
+def test_create_task_accepts_every_allowed_source(app_session, repo_id, source):
+    tid = create_task(app_session, repo_id, source, "r#15", "t", "b")
+    assert app_session.get(Task, tid).source == source
+
+
+def test_external_ref_none_is_stored_as_null(app_session, repo_id):
+    tid = create_task(app_session, repo_id, "manual", None, "t", "b")
+    assert app_session.get(Task, tid).external_ref is None
+    payload = app_session.execute(
+        sa.text("SELECT payload FROM events WHERE task_id=:t AND type='task_created'"),
+        {"t": tid},
+    ).scalar_one()
+    assert payload == {"source": "manual", "external_ref": None}
+    assert (
+        app_session.execute(
+            sa.text("SELECT external_ref IS NULL FROM tasks WHERE id=:t"), {"t": tid}
+        ).scalar_one()
+        is True
+    )
 
 
 def test_create_task_writes_event(app_session, repo_id):

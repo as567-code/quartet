@@ -20,7 +20,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from quartet.db.models import Artifact, Event, Handover, Repo, Task
+from quartet.db.models import TASK_SOURCES, Artifact, Event, Handover, Repo, Task
 from quartet.domain.artifacts import ARTIFACT_KINDS, ContextDigest
 from quartet.domain.events import check_event_payload
 from quartet.domain.states import Role, TaskState
@@ -67,13 +67,17 @@ def create_task(
     session: Session,
     repo_id: UUID,
     source: Literal["github_issue", "suite", "manual"],
-    external_ref: str,
+    external_ref: str | None,
     title: str,
     body_untrusted: str,
     priority: int = 100,
     budget_usd: Decimal = Decimal("5.00"),
 ) -> UUID:
-    external_ref = _clean("external_ref", external_ref, EXTERNAL_REF_MAX_BYTES)
+    """Insert a QUEUED task and its ``task_created`` event (``external_ref=None`` -> NULL)."""
+    if source not in TASK_SOURCES:
+        raise ValueError("source must be one of: " + ", ".join(TASK_SOURCES))
+    if external_ref is not None:
+        external_ref = _clean("external_ref", external_ref, EXTERNAL_REF_MAX_BYTES)
     title = _clean("title", title, TITLE_MAX_BYTES)
     body = _clean("body_untrusted", body_untrusted, BODY_MAX_BYTES)
     task = Task(

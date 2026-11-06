@@ -7,7 +7,7 @@ export QUARTET_ENV_FILE := $(CURDIR)/.env
 # Pinned scanner (not a project dependency); CI reuses this exact pin via `make`.
 SEMGREP := uvx semgrep@1.184.0
 
-.PHONY: setup up down status check sec secrets sast bandit deps-audit test doctor
+.PHONY: setup up down status migrate check sec secrets sast bandit deps-audit test doctor
 
 setup:
 	uv sync && uv run pre-commit install
@@ -20,6 +20,10 @@ down:
 
 status:
 	docker compose ps
+
+# Runs as quartet_migrator via QUARTET_MIGRATOR_DATABASE_URL (never the app URL).
+migrate:
+	uv run alembic upgrade head
 
 doctor:
 	uv run quartet doctor

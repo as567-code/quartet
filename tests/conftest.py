@@ -23,7 +23,13 @@ from pydantic import SecretStr
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session
 
-from quartet.config import InvalidSettings, _resolve_env_file, libpq_url, load_settings
+from quartet.config import (
+    InsecureEnvFile,
+    InvalidSettings,
+    _resolve_env_file,
+    libpq_url,
+    load_settings,
+)
 from quartet.db.session import make_engine
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -113,10 +119,16 @@ def list_test_databases(admin_url: str) -> list[str]:
 def admin_url() -> str:
     url = os.environ.get("QUARTET_ADMIN_DATABASE_URL")
     if not url:
+        insecure: str | None = None
+        secret: SecretStr | None = None
         try:
             secret = load_settings().admin_database_url
+        except InsecureEnvFile as exc:  # the message names the path only, never file contents
+            insecure = str(exc)
         except InvalidSettings:
-            secret = None
+            pass
+        if insecure is not None:
+            pytest.fail(insecure, pytrace=False)
         url = secret.get_secret_value() if secret else None
     if not url:
         if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
