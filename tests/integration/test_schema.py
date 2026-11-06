@@ -1,8 +1,11 @@
+import re
 import uuid
 
 import pytest
 import sqlalchemy as sa
 from alembic import command
+
+from quartet.domain.states import RUNNABLE
 
 pytestmark = pytest.mark.integration
 
@@ -53,7 +56,9 @@ def test_claimable_index_is_partial_on_runnable_states(fresh_db):
             ).scalar_one()
     finally:
         eng.dispose()
-    assert "lease_owner IS NULL" in ddl and "'PR_DRAFT'" in ddl and "'MERGED'" not in ddl
+    assert "lease_owner IS NULL" in ddl
+    predicate_states = set(re.findall(r"'([A-Z_]+)'", ddl))
+    assert predicate_states == {s.value for s in RUNNABLE}
 
 
 def test_events_are_append_only_for_app_role(app_engine, seeded_task):
