@@ -1,0 +1,14 @@
+[project]
+name = "quartet-workspace"
+version = "0.1.0"
+description = "Quartet workspace member (stub)"
+readme = "README.md"
+authors = [
+    { name = "Aditya", email = "adityaswaroop23@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
