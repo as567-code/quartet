@@ -1,7 +1,9 @@
 """Integration tests for the repository helpers (flush-only; callers own the transaction)."""
 
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
@@ -10,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from quartet.db.models import Artifact, Event, Handover, Repo, Task
 from quartet.db.repository import (
+    UntrustedInputError,
+    UntrustedInputInvalid,
     UntrustedInputTooLarge,
     append_event,
     create_repo,
@@ -17,7 +21,17 @@ from quartet.db.repository import (
     record_handover,
     save_artifact,
 )
-from quartet.domain.artifacts import ContextDigest
+from quartet.domain.artifacts import (
+    ARTIFACT_KINDS,
+    ConflictReport,
+    ContextDigest,
+    Finding,
+    HandoverNote,
+    PatchSummary,
+    Plan,
+    ReviewReport,
+    TestReport,
+)
 from quartet.domain.states import Role, TaskState
 
 pytestmark = pytest.mark.integration
@@ -50,7 +64,42 @@ def test_cap_error_never_echoes_content(app_session, repo_id):
 
 
 def test_cap_applies_after_nul_strip(app_session, repo_id):
-    create_task(app_session, repo_id, "manual", "r#9", "x" * 512 + "\x00" * 10, "b")
+    tid = create_task(
+        app_session, repo_id, "manual", "r#9", "x" * 512 + "\x00" * 10, "y" * 65_536 + "\x00" * 5
+    )
+    task = app_session.get(Task, tid)
+    assert task.title == "x" * 512 and task.body_untrusted == "y" * 65_536
+
+
+def test_external_ref_nul_stripped_in_row_and_event(app_session, repo_id):
+    tid = create_task(app_session, repo_id, "manual", "r\x00#13", "t", "b")
+    assert app_session.get(Task, tid).external_ref == "r#13"
+    payload = app_session.execute(
+        sa.text("SELECT payload FROM events WHERE task_id=:t"), {"t": tid}
+    ).scalar()
+    assert payload["external_ref"] == "r#13"
+
+
+def test_external_ref_cap(app_session, repo_id):
+    create_task(app_session, repo_id, "manual", "r" * 512, "t", "b")
+    with pytest.raises(UntrustedInputTooLarge, match="external_ref"):
+        create_task(app_session, repo_id, "manual", "r" * 513, "t", "b")
+
+
+@pytest.mark.parametrize("field", ["title", "body_untrusted", "external_ref"])
+def test_lone_surrogate_rejected_without_echo(app_session, repo_id, field):
+    args: dict[str, Any] = {"external_ref": "r", "title": "t", "body_untrusted": "b"}
+    args[field] = "ok\ud800"
+    with pytest.raises(UntrustedInputInvalid) as exc:
+        create_task(app_session, repo_id, "manual", **args)
+    assert field in str(exc.value) and "\ud800" not in str(exc.value)
+    assert not any(0xD800 <= ord(c) <= 0xDFFF for c in str(exc.value))
+
+
+def test_error_classes_share_base():
+    assert issubclass(UntrustedInputTooLarge, UntrustedInputError)
+    assert issubclass(UntrustedInputInvalid, UntrustedInputError)
+    assert issubclass(UntrustedInputError, ValueError)
 
 
 def test_create_task_writes_event(app_session, repo_id):
@@ -97,11 +146,74 @@ def test_append_event_returns_id(app_session, seeded_task):
     assert app_session.get(Event, first).payload == {"a": 1}
 
 
-def test_save_artifact_stores_payload_and_version(app_session, seeded_task, sample_plan):
-    aid = save_artifact(app_session, seeded_task, sample_plan)
-    row = app_session.get(Artifact, aid)
-    assert row.kind == "plan" and row.schema_version == 1
-    assert row.payload == sample_plan.model_dump(mode="json")
+def _minimal(kind: str) -> BaseModel:
+    ctor: dict[str, Callable[[], BaseModel]] = {
+        "plan": lambda: Plan.model_validate(
+            {
+                "schema_version": 1,
+                "summary": "s",
+                "steps": [],
+                "predicted_files": [],
+                "acceptance_criteria": [],
+                "test_strategy": "t",
+                "risk_level": "low",
+                "out_of_scope_reason": None,
+            }
+        ),
+        "patch_summary": lambda: PatchSummary(
+            schema_version=1, summary="s", files_changed=["a"], rationale="r", known_limitations=[]
+        ),
+        "test_report": lambda: TestReport(
+            schema_version=1,
+            passed=1,
+            failed=0,
+            errors=0,
+            skipped=0,
+            failing_tests=[],
+            new_tests=[],
+            suite_command=["pytest"],
+            output_excerpt="ok",
+            post_rebase=False,
+        ),
+        "review_report": lambda: ReviewReport(
+            schema_version=1,
+            verdict="approve",
+            findings=[
+                Finding(file="a.py", line=None, severity="nit", rationale="r", suggestion=None)
+            ],
+            injection_suspected=False,
+        ),
+        "handover_note": lambda: HandoverNote(
+            schema_version=1,
+            goal="g",
+            attempted=[],
+            current_state="c",
+            evidence=[],
+            suggested_next_step="n",
+        ),
+        "conflict_report": lambda: ConflictReport(
+            schema_version=1,
+            base_sha="a",
+            onto_sha="b",
+            conflicting_files=[],
+            resolution_attempted=False,
+        ),
+    }
+    return ctor[kind]()
+
+
+def test_minimal_builders_cover_every_kind():
+    for kind, cls in ARTIFACT_KINDS.items():
+        assert type(_minimal(kind)) is cls
+
+
+@pytest.mark.parametrize("kind", list(ARTIFACT_KINDS))
+def test_save_artifact_round_trips_every_kind(app_session, seeded_task, kind):
+    artifact = _minimal(kind)
+    row = app_session.get(Artifact, save_artifact(app_session, seeded_task, artifact))
+    assert row.kind == kind and row.schema_version == 1
+    assert row.payload == artifact.model_dump(mode="json")
+    assert type(artifact).model_validate(row.payload) == artifact
 
 
 def test_handover_round_trip(app_session, seeded_task, sample_plan):

@@ -5,15 +5,16 @@ generated ids and return them; the caller owns the transaction, exactly as with
 ``transition()``. ``create_task`` writes its ``task_created`` event in that same uncommitted
 transaction, so the task and its event commit or roll back together.
 
-Untrusted text (``title``, ``body_untrusted``) has NUL characters stripped first (Postgres
-``text`` cannot store them) and is then capped by UTF-8 *byte* length. The database CHECK
+Untrusted text (``title``, ``body_untrusted``, ``external_ref``) has NUL characters stripped
+first (Postgres ``text`` cannot store them), is checked for UTF-8 encodability (lone surrogates
+raise ``UntrustedInputInvalid``) and is capped by UTF-8 *byte* length. The database CHECK
 constraints remain as defence in depth.
 """
 
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -25,15 +26,29 @@ from quartet.domain.states import Role, TaskState
 
 TITLE_MAX_BYTES = 512
 BODY_MAX_BYTES = 65_536
+EXTERNAL_REF_MAX_BYTES = 512
 
 
-class UntrustedInputTooLarge(ValueError):
-    """An untrusted field exceeds its byte cap. The message never echoes the content."""
+class UntrustedInputError(ValueError):
+    """Base class: an untrusted field was rejected. Messages never echo the content."""
+
+
+class UntrustedInputTooLarge(UntrustedInputError):
+    """An untrusted field exceeds its byte cap."""
+
+
+class UntrustedInputInvalid(UntrustedInputError):
+    """An untrusted field cannot be encoded as UTF-8 (for example a lone surrogate)."""
 
 
 def _clean(field: str, value: str, limit: int) -> str:
+    """NUL-strip, validate UTF-8 encodability, then cap by byte length."""
     cleaned = value.replace("\x00", "")
-    if len(cleaned.encode("utf-8")) > limit:
+    try:
+        size = len(cleaned.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise UntrustedInputInvalid(f"{field} is not valid UTF-8 text") from None
+    if size > limit:
         raise UntrustedInputTooLarge(f"{field} exceeds the {limit}-byte UTF-8 limit")
     return cleaned
 
@@ -57,6 +72,7 @@ def create_task(
     priority: int = 100,
     budget_usd: Decimal = Decimal("5.00"),
 ) -> UUID:
+    external_ref = _clean("external_ref", external_ref, EXTERNAL_REF_MAX_BYTES)
     title = _clean("title", title, TITLE_MAX_BYTES)
     body = _clean("body_untrusted", body_untrusted, BODY_MAX_BYTES)
     task = Task(
@@ -90,7 +106,7 @@ def save_artifact(session: Session, task_id: UUID, artifact: BaseModel) -> UUID:
     row = Artifact(
         task_id=task_id,
         kind=kind,
-        schema_version=getattr(artifact, "schema_version", 1),
+        schema_version=cast(Any, artifact).schema_version,
         payload=artifact.model_dump(mode="json"),
     )
     session.add(row)
