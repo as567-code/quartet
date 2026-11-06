@@ -42,3 +42,12 @@ def test_missing_tools_are_reported_not_installed(monkeypatch):
     checks = {c.name: c for c in run_checks(load_settings())}
     for name in ("docker", "git"):
         assert checks[name].ok is False and checks[name].detail == "not installed"
+
+
+def test_doctor_displays_the_host_libpq_will_use(monkeypatch):
+    monkeypatch.setenv(
+        "QUARTET_DATABASE_URL", "postgresql://u:hunter2@10.255.255.1/q?host=127.0.0.1&port=1"
+    )
+    pg = next(c for c in run_checks(load_settings()) if c.name == "postgres")
+    assert pg.ok is False and "127.0.0.1:1" in pg.detail
+    assert "10.255.255.1" not in pg.detail and "hunter2" not in pg.detail

@@ -10,6 +10,8 @@ from typing import Any
 import psycopg
 from psycopg import sql
 
+from quartet.config import libpq_url, validate_db_url
+
 MIGRATOR = "quartet_migrator"
 APP = "quartet_app"
 DATABASE = "quartet"
@@ -69,9 +71,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyError as exc:
         print(f"missing environment variable: {exc.args[0]}", file=sys.stderr)
         return 2
-    # psycopg wants a plain postgresql:// URL; strip any SQLAlchemy driver suffix.
-    url = admin_url.replace("postgresql+psycopg://", "postgresql://", 1)
-    bootstrap(url, migrator_pw, app_pw)
+    try:
+        validate_db_url(admin_url)
+    except ValueError as exc:
+        print(f"invalid admin database URL: {exc}", file=sys.stderr)
+        return 2
+    bootstrap(libpq_url(admin_url), migrator_pw, app_pw)
     print("bootstrap complete")
     return 0
 

@@ -1,5 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := status
+# Make targets deliberately select THIS repo's own .env (explicit dev convenience); never run
+# them from an untrusted checkout, whose .env would then be trusted.
 export QUARTET_ENV_FILE := $(CURDIR)/.env
 
 # Pinned scanner (not a project dependency); CI reuses this exact pin via `make`.

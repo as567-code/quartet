@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
 from pydantic import SecretStr
 
-from quartet.config import Settings
+from quartet.config import Settings, libpq_url
 
 MIN_GIT = (2, 40)
 _SUBPROCESS_TIMEOUT = 5
@@ -74,12 +75,12 @@ def _check_git() -> Check:
 
 
 def _check_postgres(database_url: str) -> Check:
-    url = re.sub(r"^postgresql\+psycopg:", "postgresql:", database_url)
+    url = libpq_url(database_url)
     try:
-        parts = urlsplit(url)
-        target = f"{parts.hostname or 'localhost'}:{parts.port or 5432}"
-    except ValueError:
+        info = conninfo_to_dict(url)
+    except psycopg.Error:
         return Check("postgres", False, "invalid database URL")
+    target = f"{info.get('host') or 'localhost'}:{info.get('port') or 5432}"
     try:
         with psycopg.connect(url, connect_timeout=3) as conn:
             conn.execute("SELECT 1")

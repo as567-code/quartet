@@ -170,3 +170,29 @@ def test_db_url_with_nul_byte_is_rejected_when_passed_directly():
     with pytest.raises(ValidationError) as ei:
         Settings(QUARTET_DATABASE_URL="postgresql://u:hunter2@h/db\x00")
     assert "hunter2" not in str(ei.value)
+
+
+def test_libpq_url_strips_only_the_leading_driver():
+    from quartet.config import libpq_url
+
+    assert libpq_url("postgresql+psycopg://u:p@h/db") == "postgresql://u:p@h/db"
+    assert libpq_url("postgresql://u:p@h/db") == "postgresql://u:p@h/db"
+    tricky = "postgresql://u:p@h/db?application_name=postgresql+psycopg://x"
+    assert libpq_url(tricky) == tricky
+
+
+def test_validate_db_url_rejects_without_echoing_value():
+    from quartet.config import validate_db_url
+
+    validate_db_url("postgresql://u:p@h/db")
+    with pytest.raises(ValueError) as err:
+        validate_db_url("postgresql://u:secretpw@h/db?passfile=x")
+    assert "secretpw" not in str(err.value) and "passfile" in str(err.value)
+
+
+def test_home_is_tilde_expanded(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("QUARTET_DATABASE_URL", "postgresql+psycopg://u:p@localhost:5432/q")
+    monkeypatch.setenv("QUARTET_HOME", "~/x")
+    assert load_settings().home == Path.home() / "x"
+    assert Path.home() == tmp_path

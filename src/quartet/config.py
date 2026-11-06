@@ -1,7 +1,8 @@
 """Settings loaded lazily from the environment and an explicitly chosen env file.
 
-A ``.env`` in the current directory is never read: running ``quartet`` inside an untrusted
-repository must not let that repository redirect database or telemetry connections.
+A ``.env`` in the current directory is never read implicitly: running ``quartet`` inside an
+untrusted repository must not let that repository redirect database or telemetry connections.
+This repo's Makefile selects its own ``.env`` explicitly via ``QUARTET_ENV_FILE``.
 """
 
 import os
@@ -37,18 +38,20 @@ class InvalidSettings(ValueError):
     """Settings failed validation. The message names fields only, never values."""
 
 
-def _check_db_url(value: SecretStr | None) -> SecretStr | None:
-    if value is None:
-        return None
-    raw = value.get_secret_value()
+def libpq_url(url: str) -> str:
+    """Strip the SQLAlchemy-style ``+psycopg`` driver so libpq/psycopg can parse the URL."""
+    return re.sub(r"^postgresql\+psycopg:", "postgresql:", url)
+
+
+def validate_db_url(raw: str) -> None:
+    """Raise ``ValueError`` (message never contains the URL) unless ``raw`` is an allowed URL."""
     if "#" in raw or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in raw):
         raise ValueError("database URL contains forbidden characters")
     scheme = raw.split(":", 1)[0]
     if scheme not in _DB_SCHEMES or ":" not in raw:
         raise ValueError("database URL scheme must be postgresql or postgresql+psycopg")
-    libpq_url = re.sub(r"^postgresql\+psycopg:", "postgresql:", raw)
     try:
-        keys = set(conninfo_to_dict(libpq_url))
+        keys = set(conninfo_to_dict(libpq_url(raw)))
     except psycopg.Error:
         raise ValueError("not a valid database URL") from None
     extra = keys - _DB_KEYS_ALLOWED
@@ -56,6 +59,11 @@ def _check_db_url(value: SecretStr | None) -> SecretStr | None:
         raise ValueError(
             "database URL uses disallowed connection parameters: " + ", ".join(sorted(extra))
         )
+
+
+def _check_db_url(value: SecretStr | None) -> SecretStr | None:
+    if value is not None:
+        validate_db_url(value.get_secret_value())
     return value
 
 
@@ -79,6 +87,11 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_db_url(cls, value: SecretStr | None) -> SecretStr | None:
         return _check_db_url(value)
+
+    @field_validator("home")
+    @classmethod
+    def _expand_home(cls, value: Path) -> Path:
+        return value.expanduser()
 
     @field_validator("otlp_endpoint")
     @classmethod
