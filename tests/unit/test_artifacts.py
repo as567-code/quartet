@@ -68,11 +68,30 @@ def test_schema_is_strict_for_both_vendors(model):
     assert not (FORBIDDEN & keys)
 
 
-def test_schema_covers_nested_anyof_objects():
+def test_schema_covers_ref_items_in_nested_defs():
     schema = strict_json_schema(ReviewReport)
     finding = schema["$defs"]["Finding"]
     assert finding["additionalProperties"] is False
     assert set(finding["required"]) == {"file", "line", "severity", "rationale", "suggestion"}
+
+
+def _nullable_and_required(obj: dict[str, Any], name: str) -> None:
+    prop = obj["properties"][name]
+    assert {"type": "null"} in prop["anyOf"]
+    assert name in obj["required"]
+
+
+def test_nullable_fields_are_anyof_null_and_required():
+    _nullable_and_required(strict_json_schema(Plan), "out_of_scope_reason")
+    finding = strict_json_schema(ReviewReport)["$defs"]["Finding"]
+    _nullable_and_required(finding, "line")
+    _nullable_and_required(finding, "suggestion")
+
+
+@pytest.mark.parametrize("model", [*ARTIFACT_KINDS.values(), ContextDigest])
+def test_no_default_key_anywhere_in_strict_schema(model):
+    schema = strict_json_schema(model)
+    assert not [n for n in _walk(schema) if isinstance(n, dict) and "default" in n]
 
 
 def test_schema_version_const_shape():
