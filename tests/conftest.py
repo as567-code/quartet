@@ -119,6 +119,8 @@ def admin_url() -> str:
             secret = None
         url = secret.get_secret_value() if secret else None
     if not url:
+        if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+            pytest.fail("integration DB not configured in CI")
         pytest.skip("QUARTET_ADMIN_DATABASE_URL is not available; skipping integration tests")
     return url
 

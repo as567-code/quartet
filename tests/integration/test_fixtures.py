@@ -27,5 +27,6 @@ def test_fresh_db_dropped_when_test_fails(pytester, admin_url):  # Review Focus 
 def test_migrated_db_has_roles_and_alembic_config(migrated_db, alembic_config):
     assert migrated_db.name.startswith("quartet_test_")
     cfg = alembic_config(migrated_db.migrator_url)
-    assert cfg.attributes["url"] == migrated_db.migrator_url
+    same = cfg.attributes["url"] == migrated_db.migrator_url
+    assert same, "alembic url mismatch"
     assert "://" not in repr(migrated_db)  # URLs carry passwords: never in repr
