@@ -252,3 +252,20 @@ def seeded_task(make_tasks: Callable[..., list[uuid.UUID]]) -> uuid.UUID:
     from quartet.domain.states import TaskState
 
     return make_tasks(1, None, TaskState.QUEUED)[0]
+
+
+@pytest.fixture
+def sample_plan():
+    """A minimal valid ``Plan`` (local import keeps conftest import-light)."""
+    from quartet.domain.artifacts import Plan, PlanStep, PredictedFile
+
+    return Plan(
+        schema_version=1,
+        summary="Add a greeting helper",
+        steps=[PlanStep(description="Write greet()", files=["src/greet.py"])],
+        predicted_files=[PredictedFile(path_glob="src/greet.py", mode="write")],
+        acceptance_criteria=["greet('x') returns 'hello x'"],
+        test_strategy="unit test greet()",
+        risk_level="low",
+        out_of_scope_reason=None,
+    )
