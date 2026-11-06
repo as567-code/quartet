@@ -1,8 +1,9 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from quartet.config import InsecureEnvFile, InvalidSettings, load_settings
+from quartet.config import InsecureEnvFile, InvalidSettings, Settings, load_settings
 
 
 def test_secrets_are_hidden_in_repr(monkeypatch):
@@ -121,3 +122,51 @@ def test_otlp_endpoint_allowlist(monkeypatch):
         load_settings()
     monkeypatch.setenv("OTLP_ENDPOINT", "http://127.0.0.1:4318")
     assert load_settings().otlp_endpoint == "http://127.0.0.1:4318"
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "#?passfile=x",
+        "?passfile=x#",
+        " x",
+        "\n",
+        "\x01",
+        "\t",
+        "?%70assfile=x",
+        "?options=-c%20x",
+        "?service=s",
+        "?hostaddr=1.2.3.4",
+    ],
+)
+def test_db_url_bypass_attempts_are_rejected(monkeypatch, suffix):
+    monkeypatch.setenv("QUARTET_DATABASE_URL", "postgresql://u:hunter2@h/db" + suffix)
+    with pytest.raises(InvalidSettings) as ei:
+        load_settings()
+    assert "hunter2" not in str(ei.value)
+
+
+def test_db_url_host_query_param_is_accepted_because_libpq_yields_allowed_key(monkeypatch):
+    # libpq parses `?host=evil` to the allowed key `host` (host is legitimately part of a DB URL),
+    # so the allowlist cannot reject it; the credential-exfil vectors are passfile/service/etc.
+    monkeypatch.setenv("QUARTET_DATABASE_URL", "postgresql://u:hunter2@h/db?host=evil")
+    assert load_settings().database_url.get_secret_value().endswith("host=evil")
+
+
+def test_db_url_with_driver_and_sslmode_still_accepted(monkeypatch):
+    monkeypatch.setenv("QUARTET_DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db?sslmode=require")
+    assert load_settings().database_url.get_secret_value().endswith("sslmode=require")
+
+
+def test_psycopg2_driver_is_rejected(monkeypatch):
+    monkeypatch.setenv("QUARTET_DATABASE_URL", "postgresql+psycopg2://u:hunter2@h/db")
+    with pytest.raises(InvalidSettings) as ei:
+        load_settings()
+    assert "hunter2" not in str(ei.value)
+
+
+def test_db_url_with_nul_byte_is_rejected_when_passed_directly():
+    # a NUL cannot travel through the process environment, but can via an init kwarg
+    with pytest.raises(ValidationError) as ei:
+        Settings(QUARTET_DATABASE_URL="postgresql://u:hunter2@h/db\x00")
+    assert "hunter2" not in str(ei.value)

@@ -5,15 +5,27 @@ repository must not let that repository redirect database or telemetry connectio
 """
 
 import os
+import re
 import stat
 from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 
+import psycopg
+from psycopg.conninfo import conninfo_to_dict
 from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DB_SCHEMES = {"postgresql", "postgresql+psycopg"}
-_DB_QUERY_ALLOWED = {"sslmode", "connect_timeout", "application_name"}
+_DB_KEYS_ALLOWED = {
+    "user",
+    "password",
+    "host",
+    "port",
+    "dbname",
+    "sslmode",
+    "connect_timeout",
+    "application_name",
+}
 _OTLP_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -28,18 +40,21 @@ class InvalidSettings(ValueError):
 def _check_db_url(value: SecretStr | None) -> SecretStr | None:
     if value is None:
         return None
-    try:
-        parts = urlsplit(value.get_secret_value())
-        params = parse_qsl(parts.query, keep_blank_values=True)
-        _ = parts.port
-    except ValueError:
-        raise ValueError("not a valid database URL") from None
-    if parts.scheme not in _DB_SCHEMES:
+    raw = value.get_secret_value()
+    if "#" in raw or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in raw):
+        raise ValueError("database URL contains forbidden characters")
+    scheme = raw.split(":", 1)[0]
+    if scheme not in _DB_SCHEMES or ":" not in raw:
         raise ValueError("database URL scheme must be postgresql or postgresql+psycopg")
-    if not set(dict(params)) <= _DB_QUERY_ALLOWED or len(params) != len(dict(params)):
+    libpq_url = re.sub(r"^postgresql\+psycopg:", "postgresql:", raw)
+    try:
+        keys = set(conninfo_to_dict(libpq_url))
+    except psycopg.Error:
+        raise ValueError("not a valid database URL") from None
+    extra = keys - _DB_KEYS_ALLOWED
+    if extra:
         raise ValueError(
-            "database URL query parameters must be a subset of "
-            + ", ".join(sorted(_DB_QUERY_ALLOWED))
+            "database URL uses disallowed connection parameters: " + ", ".join(sorted(extra))
         )
     return value
 
