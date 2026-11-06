@@ -194,3 +194,61 @@ def app_session(app_engine: sa.Engine) -> Iterator[Session]:
     finally:
         session.rollback()
         session.close()
+
+
+# ---- data fixtures (insert through the app role, always COMMIT) ----
+
+
+@pytest.fixture
+def repo_id(app_engine: sa.Engine) -> uuid.UUID:
+    from quartet.db.models import Repo
+
+    with Session(app_engine) as session, session.begin():
+        repo = Repo(owner="acme", name=f"widgets-{uuid.uuid4().hex[:8]}", mirror_path=None)
+        session.add(repo)
+        session.flush()
+        return repo.id
+
+
+@pytest.fixture
+def make_tasks(app_engine: sa.Engine, repo_id: uuid.UUID) -> Callable[..., list[uuid.UUID]]:
+    """Factory: insert ``n`` tasks in list order, one committed transaction per row.
+
+    A transaction per row means ``now()`` (transaction-stable) differs between rows, so
+    ``created_at`` is strictly increasing in list order.
+    """
+    from quartet.db.models import Task
+    from quartet.domain.states import TaskState
+
+    def _make(
+        n: int = 1,
+        priorities: list[int] | None = None,
+        state: TaskState = TaskState.QUEUED,
+    ) -> list[uuid.UUID]:
+        if priorities is not None and len(priorities) != n:
+            raise ValueError("priorities must have length n")
+        ids: list[uuid.UUID] = []
+        for i in range(n):
+            with Session(app_engine) as session, session.begin():
+                task = Task(
+                    repo_id=repo_id,
+                    source="manual",
+                    title=f"task {i}",
+                    state=state,
+                    version=0,
+                )
+                if priorities is not None:
+                    task.priority = priorities[i]
+                session.add(task)
+                session.flush()
+                ids.append(task.id)
+        return ids
+
+    return _make
+
+
+@pytest.fixture
+def seeded_task(make_tasks: Callable[..., list[uuid.UUID]]) -> uuid.UUID:
+    from quartet.domain.states import TaskState
+
+    return make_tasks(1, None, TaskState.QUEUED)[0]
