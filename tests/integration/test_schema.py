@@ -163,6 +163,29 @@ def test_app_role_lacks_update_delete_on_exactly_the_append_only_tables(fresh_db
     assert full == {r.tablename for r in rows} - APPEND_ONLY - READ_ONLY
 
 
+def test_app_role_cannot_create_objects_in_the_schema(fresh_db):
+    eng = sa.create_engine(fresh_db.migrator_url)
+    try:
+        with eng.connect() as c:
+            assert (
+                c.execute(
+                    sa.text("SELECT has_schema_privilege('quartet_app', 'public', 'CREATE')")
+                ).scalar_one()
+                is False
+            )
+    finally:
+        eng.dispose()
+    app = sa.create_engine(fresh_db.app_url)
+    try:
+        with (
+            pytest.raises(sa.exc.ProgrammingError, match="permission denied"),
+            app.begin() as c,
+        ):
+            c.execute(sa.text("CREATE TABLE public.zz_app_made (id int)"))
+    finally:
+        app.dispose()
+
+
 def test_migration_round_trip(fresh_db, alembic_config):
     cfg = alembic_config(fresh_db.migrator_url)
     command.downgrade(cfg, "base")

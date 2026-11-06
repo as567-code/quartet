@@ -6,6 +6,8 @@ export QUARTET_ENV_FILE := $(CURDIR)/.env
 
 # Pinned scanner (not a project dependency); CI reuses this exact pin via `make`.
 SEMGREP := uvx semgrep@1.184.0
+# Must equal GITLEAKS_VERSION in .github/workflows/ci.yml (tests/repo_hygiene checks this).
+GITLEAKS_VERSION := 8.30.1
 
 .PHONY: setup up down status migrate check sec secrets sast bandit deps-audit test doctor
 
@@ -37,6 +39,11 @@ check:
 sec: secrets sast bandit deps-audit
 
 secrets:
+	@found="$$(gitleaks version 2>/dev/null || true)"; \
+	if [ "$$found" != "$(GITLEAKS_VERSION)" ]; then \
+	  echo "make secrets: gitleaks $(GITLEAKS_VERSION) is required (the CI pin); found '$${found:-none}'" >&2; \
+	  exit 1; \
+	fi
 	gitleaks git --redact --no-banner
 
 sast:

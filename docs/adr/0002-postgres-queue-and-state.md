@@ -11,10 +11,10 @@ Quartet needs a work queue, file leases, task state, hand-overs and an audit log
 
 Use PostgreSQL 16 as the single store.
 
-- **Queue:** workers claim tasks with `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING ...`. Lease expiry uses the database `now()`, never the host clock. A reaper clears expired leases and increments `attempt`.
+- **Queue:** workers claim tasks with `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING ...`. Lease expiry uses the database `now()`, never the host clock. Reaping clears expired leases, bumps `version` (the compare-and-set token, which fences the previous holder), increments `attempt` for runnable states only, and logs a `lease_reaped` event, all in one statement. `claim()` reaps first in its own transaction, so recovery does not depend on a separate reaper loop. Each queue function needs a dedicated session with no open transaction and commits its own.
 - **Transitions:** every state change is a compare-and-set on state and version, validated against a static transition table.
-- **Audit:** every transition appends to an immutable, append-only `events` table; the application role has no UPDATE or DELETE on it.
-- **Roles:** `quartet_migrator` owns the database and runs migrations; `quartet_app` is intended to have DML only. Status: the two login roles exist (Phase 0), but no grants exist yet, so `quartet_app` currently has no table privileges. The DML grants, and the revocation of UPDATE/DELETE/TRUNCATE on `events`, arrive with the Phase 1 migration.
+- **Audit:** every transition, `create_task()` and lease reap appends to the append-only `events` table. The application role has SELECT and column-level INSERT on `(task_id, type, payload)` only, so `id` and `created_at` are stamped by the database, and no UPDATE, DELETE or TRUNCATE. `task_id` is nullable for task-less events. Application-written payloads are capped at 65,536 bytes of compact JSON.
+- **Roles:** `quartet_migrator` owns the database and every table and runs migrations (Alembic connects through `QUARTET_MIGRATOR_DATABASE_URL` and never falls back to the application URL). `quartet_app` has DML only: SELECT/INSERT/UPDATE/DELETE on the tables (also for future migrator-created tables, via default privileges), no CREATE on the schema, the restricted `events` grants above, and SELECT only on `alembic_version`.
 
 ## Alternatives considered
 
