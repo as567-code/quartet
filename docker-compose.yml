@@ -1,3 +1,5 @@
+name: quartet
+
 services:
   postgres:
     image: postgres:16@sha256:933463a6c8eba2b9f5cd414138738cd8d5519cd2c471214c222652f547a66a32
@@ -12,7 +14,7 @@ services:
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
       - quartet_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d quartet"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d quartet"]
       interval: 3s
       timeout: 3s
       retries: 20

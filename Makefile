@@ -22,7 +22,7 @@ doctor:
 check:
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run mypy src tests
+	uv run mypy src tests scripts
 	uv run pytest --cov=quartet --cov-report=term-missing --cov-fail-under=85
 
 sec:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Any
 
 import psycopg
 from psycopg import sql
@@ -14,7 +15,7 @@ APP = "quartet_app"
 DATABASE = "quartet"
 
 
-def _ensure_role(cur: psycopg.Cursor, name: str, password: str) -> None:
+def _ensure_role(cur: psycopg.Cursor[Any], name: str, password: str) -> None:
     cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (name,))
     if cur.fetchone() is None:
         cur.execute(
@@ -23,6 +24,7 @@ def _ensure_role(cur: psycopg.Cursor, name: str, password: str) -> None:
             )
         )
     else:
+        # Intentionally resets the password on every run (keeps CI and .env in sync).
         cur.execute(
             sql.SQL("ALTER ROLE {} LOGIN PASSWORD {}").format(
                 sql.Identifier(name), sql.Literal(password)
@@ -51,8 +53,16 @@ def bootstrap(admin_url: str, migrator_pw: str, app_pw: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--admin-url", required=True, help="superuser libpq/SQLAlchemy-free URL")
+    parser.add_argument(
+        "--admin-url",
+        default=None,
+        help="superuser URL (default: $QUARTET_ADMIN_DATABASE_URL)",
+    )
     args = parser.parse_args(argv)
+    admin_url = args.admin_url or os.environ.get("QUARTET_ADMIN_DATABASE_URL")
+    if not admin_url:
+        print("provide --admin-url or set QUARTET_ADMIN_DATABASE_URL", file=sys.stderr)
+        return 2
     try:
         migrator_pw = os.environ["QUARTET_MIGRATOR_PASSWORD"]
         app_pw = os.environ["QUARTET_APP_PASSWORD"]
@@ -60,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"missing environment variable: {exc.args[0]}", file=sys.stderr)
         return 2
     # psycopg wants a plain postgresql:// URL; strip any SQLAlchemy driver suffix.
-    url = args.admin_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    url = admin_url.replace("postgresql+psycopg://", "postgresql://", 1)
     bootstrap(url, migrator_pw, app_pw)
     print("bootstrap complete")
     return 0
