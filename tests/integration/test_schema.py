@@ -185,3 +185,40 @@ def test_models_match_migrated_schema(fresh_db):
             )
     finally:
         eng.dispose()
+
+
+def test_models_match_migration(fresh_db):
+    """Autogenerate finds no drift between ORM metadata and the migrated schema."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    from quartet.db.models import Base
+
+    eng = sa.create_engine(fresh_db.migrator_url)
+    try:
+        with eng.connect() as conn:
+            ctx = MigrationContext.configure(conn, opts={"compare_type": True})
+            diff = compare_metadata(ctx, Base.metadata)
+    finally:
+        eng.dispose()
+    assert diff == []
+
+
+def test_app_role_cannot_modify_alembic_version(fresh_db):
+    app = sa.create_engine(fresh_db.app_url)
+    try:
+        with app.connect() as c:
+            assert c.execute(sa.text("SELECT count(*) FROM alembic_version")).scalar_one() == 1
+        for stmt in (
+            "UPDATE alembic_version SET version_num='x'",
+            "DELETE FROM alembic_version",
+            "INSERT INTO alembic_version (version_num) VALUES ('y')",
+            "TRUNCATE alembic_version",
+        ):
+            with (
+                pytest.raises(sa.exc.ProgrammingError, match="permission denied"),
+                app.begin() as c,
+            ):
+                c.execute(sa.text(stmt))
+    finally:
+        app.dispose()

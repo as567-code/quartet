@@ -328,6 +328,8 @@ def upgrade() -> None:
         "GRANT USAGE, SELECT ON SEQUENCES TO quartet_app"
     )
     op.execute("REVOKE UPDATE, DELETE, TRUNCATE ON events FROM quartet_app")
+    # The blanket GRANT above also covered alembic_version; the app role may only read it.
+    op.execute("REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON alembic_version FROM quartet_app")
 
 
 def downgrade() -> None:

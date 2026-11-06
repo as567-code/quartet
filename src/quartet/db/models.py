@@ -18,7 +18,9 @@ from quartet.domain.states import Role, TaskState
 
 
 class Base(DeclarativeBase):
-    """Declarative base for all Quartet tables."""
+    """Declarative base for all Quartet tables (``str`` columns are TEXT, as in the migration)."""
+
+    type_annotation_map = {str: sa.Text}  # noqa: RUF012  (SQLAlchemy's documented hook)
 
 
 def _pg_enum(enum: type[PyEnum], name: str) -> sa.Enum:
@@ -65,7 +67,7 @@ def _updated() -> Mapped[datetime]:
 
 class Repo(Base):
     __tablename__ = "repos"
-    __table_args__ = (sa.UniqueConstraint("owner", "name"),)
+    __table_args__ = (sa.UniqueConstraint("owner", "name", name="uq_repos_owner_name"),)
 
     id: Mapped[uuid.UUID] = _pk()
     owner: Mapped[str]
@@ -82,6 +84,15 @@ class Task(Base):
         _in("risk_level", RISK_LEVELS, "ck_tasks_risk_level"),
         sa.CheckConstraint("octet_length(title) <= 512", name="ck_tasks_title_len"),
         sa.CheckConstraint("octet_length(body_untrusted) <= 65536", name="ck_tasks_body_len"),
+        sa.Index(
+            "ix_tasks_claimable",
+            "priority",
+            "created_at",
+            postgresql_where=sa.text(
+                "lease_owner IS NULL AND state IN ('QUEUED','SCOPING','PLANNING','WAITING_LEASES',"
+                "'IMPLEMENTING','TESTING','REVIEWING','INTEGRATING','PR_DRAFT')"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _pk()
@@ -119,7 +130,7 @@ class Artifact(Base):
 class RoleStep(Base):
     __tablename__ = "role_steps"
     __table_args__ = (
-        sa.UniqueConstraint("task_id", "role", "round", "attempt"),
+        sa.UniqueConstraint("task_id", "role", "round", "attempt", name="uq_role_steps_step"),
         _in("status", STEP_STATUSES, "ck_role_steps_status"),
     )
 
