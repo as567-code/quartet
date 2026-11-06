@@ -1,0 +1,38 @@
+rules:
+  - id: quartet-no-shell-true
+    languages: [python]
+    severity: ERROR
+    message: Never pass shell=True to subprocess; use an argument vector.
+    pattern: subprocess.$FUNC(..., shell=True, ...)
+
+  - id: quartet-no-os-system
+    languages: [python]
+    severity: ERROR
+    message: Never call os.system; use subprocess with an argument vector.
+    pattern: os.system(...)
+
+  - id: quartet-no-fstring-sql
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not build SQL from f-strings, % formatting, .format or concatenation.
+      Use bind parameters (DML) or psycopg.sql composition (DDL).
+    patterns:
+      - pattern-either:
+          - pattern: sqlalchemy.text($Q)
+          - pattern: text($Q)
+          - pattern: $OBJ.execute($Q, ...)
+          - pattern: $OBJ.executemany($Q, ...)
+          - pattern: $OBJ.execute(text($Q), ...)
+      - metavariable-pattern:
+          metavariable: $Q
+          patterns:
+            - pattern-either:
+                - pattern: f"..."
+                - pattern: $S % $X
+                - pattern: $S.format(...)
+                - pattern: $A + $B
+            # psycopg.sql composition is the sanctioned way to build DDL.
+            - pattern-not: sql.SQL(...).format(...)
+            - pattern-not: psycopg.sql.SQL(...).format(...)
+            - pattern-not: SQL(...).format(...)

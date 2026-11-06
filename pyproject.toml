@@ -42,7 +42,6 @@ dev = [
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
     "ruff>=0.17.4",
-    "semgrep>=1.184.0",
     "time-machine>=3.6.0",
     "types-pyyaml>=6.0.12.20261103",
 ]

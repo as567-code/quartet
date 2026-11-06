@@ -2,7 +2,10 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := status
 export QUARTET_ENV_FILE := $(CURDIR)/.env
 
-.PHONY: setup up down status check sec test doctor
+# Pinned scanner (not a project dependency); CI reuses this exact pin via `make`.
+SEMGREP := uvx semgrep@1.184.0
+
+.PHONY: setup up down status check sec secrets sast bandit deps-audit test doctor
 
 setup:
 	uv sync && uv run pre-commit install
@@ -25,8 +28,21 @@ check:
 	uv run mypy src tests scripts
 	uv run pytest --cov=quartet --cov-report=term-missing --cov-fail-under=85
 
-sec:
-	@echo "sec: wired in Task 4"
+sec: secrets sast bandit deps-audit
+
+secrets:
+	gitleaks git --redact --no-banner
+
+sast:
+	$(SEMGREP) scan --metrics=off --error --config p/python --config p/security-audit --config p/secrets --config .semgrep/quartet.yml --exclude tests/repo_hygiene/fixtures
+
+bandit:
+	uv run bandit -q -r src -ll
+
+deps-audit:
+	mkdir -p .quartet
+	uv export --quiet --frozen --format requirements-txt --no-emit-workspace -o .quartet/requirements.txt
+	uv run pip-audit --strict --disable-pip -r .quartet/requirements.txt
 
 test:
 	uv run pytest
