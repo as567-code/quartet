@@ -316,6 +316,13 @@ def upgrade() -> None:
         "WHERE lease_owner IS NULL AND state IN ('QUEUED','SCOPING','PLANNING','WAITING_LEASES',"
         "'IMPLEMENTING','TESTING','REVIEWING','INTEGRATING','PR_DRAFT')"
     )
+    # Reaping (run by every claim) scans only leased rows, ordered by expiry.
+    op.create_index(
+        "ix_tasks_leased",
+        "tasks",
+        ["lease_expires_at"],
+        postgresql_where=sa.text("lease_owner IS NOT NULL"),
+    )
 
     op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO quartet_app")
     op.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO quartet_app")

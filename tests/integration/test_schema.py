@@ -61,6 +61,18 @@ def test_claimable_index_is_partial_on_runnable_states(fresh_db):
     assert predicate_states == {s.value for s in RUNNABLE}
 
 
+def test_leased_index_is_partial_on_lease_owner(fresh_db):
+    eng = sa.create_engine(fresh_db.migrator_url)
+    try:
+        with eng.connect() as c:
+            ddl = c.execute(
+                sa.text("SELECT indexdef FROM pg_indexes WHERE indexname='ix_tasks_leased'")
+            ).scalar_one()
+    finally:
+        eng.dispose()
+    assert "(lease_expires_at)" in ddl and "WHERE (lease_owner IS NOT NULL)" in ddl
+
+
 def test_events_are_append_only_for_app_role(app_engine, seeded_task):
     with app_engine.begin() as c:
         c.execute(

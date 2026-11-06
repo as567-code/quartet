@@ -93,6 +93,11 @@ class Task(Base):
                 "'IMPLEMENTING','TESTING','REVIEWING','INTEGRATING','PR_DRAFT')"
             ),
         ),
+        sa.Index(
+            "ix_tasks_leased",
+            "lease_expires_at",
+            postgresql_where=sa.text("lease_owner IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _pk()
