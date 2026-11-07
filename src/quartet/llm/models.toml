@@ -1,0 +1,38 @@
+# Context windows and output limits per docs, verified_at is the date of that check.
+# fallback_models is filled in from live data in Task 15.
+
+[models."claude-opus-5-5"]
+provider = "anthropic"
+context_window = 1000000
+max_output_tokens = 128000
+efforts = ["low", "medium", "high", "xhigh", "max"]
+fallback_models = []
+verified_via = "docs"
+verified_at = 2026-11-06
+
+[models."claude-sonnet-5-5"]
+provider = "anthropic"
+context_window = 1000000
+max_output_tokens = 128000
+efforts = ["low", "medium", "high", "xhigh", "max"]
+fallback_models = []
+verified_via = "docs"
+verified_at = 2026-11-06
+
+[models."gpt-6.1-sol"]
+provider = "openai"
+context_window = 1050000
+max_output_tokens = 128000
+efforts = ["low", "medium", "high", "xhigh", "max"]
+fallback_models = []
+verified_via = "docs"
+verified_at = 2026-11-06
+
+[models."gpt-6-astra"]
+provider = "openai"
+context_window = 1050000
+max_output_tokens = 128000
+efforts = ["low", "medium", "high", "xhigh", "max"]
+fallback_models = []
+verified_via = "docs"
+verified_at = 2026-11-06
