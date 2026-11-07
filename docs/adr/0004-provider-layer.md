@@ -5,7 +5,7 @@
 
 ## Context
 
-Quartet drives two vendors, Anthropic and OpenAI, through one role interface, `RoleRunner.run(...)` (PRD FR-15 and §9.4). Each role step must stay inside hard budgets, record every call, and never send an unvalidated tool input to a tool. The facts below were checked on 2026-11-06 against the SDK sources (anthropic 2.6.0, openai 3.46.0) and the vendor documentation. Task 15 re-verifies prices and model IDs before anything relies on them.
+Quartet drives two vendors, Anthropic and OpenAI, through one role interface, `RoleRunner.run(...)` (PRD FR-15 and §9.4). Each role step must stay inside hard budgets, record every call, and never send an unvalidated tool input to a tool. The facts below were checked on 2026-11-06 against the SDK sources (anthropic 2.6.0, openai 3.46.0) and the vendor documentation. The Phase 2 live-verification gate re-verifies prices and model IDs before anything relies on them.
 
 - **Both SDKs** use `httpx2` and retry by default (`max_retries=2`). Quartet needs its own retry policy, bounded by the step clock, so it turns SDK retries off.
 - **The Anthropic beta tool runner** has no usage or latency hook and no per-tool wall-clock cap, and it keeps a server-held thread by default.
@@ -81,5 +81,5 @@ The decisions below are the plan's binding rulings P2-R1 to P2-R9, followed by t
 - Quartet owns the loop, the retry policy and the redaction. The vendor SDKs are kept behind two adapters, so an SDK upgrade touches only `anthropic_runner.py` and `openai_runner.py`. Both SDKs are pinned to a major version.
 - Log redaction is a process-wide record factory. It is installed by `build_role_runner`, so it covers only records emitted after a runner is built.
 - No prompt, response, tool argument or tool output text reaches span attributes or exception messages (tested with an in-memory exporter). The Anthropic SDK's own spans are set to metadata-only. Quartet does not configure OpenAI SDK telemetry, and no test covers any spans that SDK emits.
-- Nothing has run live yet. Cassette recording, `quartet llm verify-models` and `pytest -m live` are planned (Task 15 gate), and the catalog's `fallback_models` lists are empty until then.
+- Nothing has run live yet. Cassette recording, `quartet llm verify-models` and `pytest -m live` are planned (the Phase 2 live-verification gate), and the catalog's `fallback_models` lists are empty until then.
 - Relation to earlier decisions: ADR-0001 names "the Anthropic tool runner" for the per-role loop. This ADR supersedes that clause for the provider layer. ADR-0001 is left unedited as the record.

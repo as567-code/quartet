@@ -149,7 +149,7 @@ Stated as they stand at the end of Phase 1:
 - **The app role can UPDATE `tasks`.** This is by design (the state machine and the queue run as `quartet_app`), but it means a leaked app credential can rewrite state, version, leases or budgets directly, bypassing the transition table, and such writes produce no event. Only `events` and `alembic_version` are protected from the app role.
 - **Queue session discipline is partly on the caller.** Queue functions refuse a session that already has an open transaction and own their own transaction, but keeping queue operations and `transition()` on separate sessions is a calling convention until the Phase 6 worker loop exists.
 - **Fencing starts at the reap.** A worker whose lease has expired but not yet been reaped can still complete a transition; it is fenced once any `claim()` or `reap_expired()` runs.
-- **Aggregate artifact size is unbounded** until Phase 2 adds a total-bytes cap per task.
+- **Aggregate artifact size is unbounded** until Phase 2 adds a total-bytes cap per task. (closed in Phase 2; see section 6)
 - **`uvx semgrep` and `uvx zizmor` are version-pinned, not hash-locked.** A compromised release under the same version on PyPI would run in CI and locally.
 - **OTLP endpoint validation is minimal.** Hardening of the validator is deferred to Phase 8 (ruling R24).
 
@@ -209,7 +209,7 @@ What exists now (not future plans):
 - **Telemetry without content.** The `role:<name>`, `llm.call` and `tool.call` spans carry metadata only: model, token counts, cost, finish reason, and a sanitised tool name and call ID. Model-chosen identifiers are sanitised before they reach a span or a ledger row. The Anthropic SDK's own spans are set to metadata-only.
 - **Cost ledger.** Each call with known usage writes one `llm_calls` row and adds its cost to `tasks.spent_usd` in the same transaction. Tool calls write `tool_calls` rows with redacted, capped arguments. Prices come from the sourced `pricing.toml`. A model missing from that table is costed at the provider's highest rate and flagged as estimated, and the step then stops.
 - **Artifact size caps.** Each artifact is capped at 256 KiB and a task's artifacts at 4 MiB in total. This closes the Phase 1 residual "aggregate artifact size is unbounded".
-- **Smoke checks and cassettes, built but not run live.** `quartet llm smoke` has a dollar cap and one tool round trip per provider. The cassette recorder and replayer keep response headers on an allowlist and never store request headers, and both are unit-tested offline. No live call, cassette recording or `verify-models` run has happened yet (Task 15 gate).
+- **Smoke checks and cassettes, built but not run live.** `quartet llm smoke` has a dollar cap and one tool round trip per provider. The cassette recorder and replayer keep response headers on an allowlist and never store request headers, and both are unit-tested offline. No live call, cassette recording or `verify-models` run has happened yet (the Phase 2 live-verification gate).
 
 New assets: the provider API keys, held in memory in the SDK clients and in the redactor's set of known secrets; the recorded cassettes, which hold synthetic prompts only and none are committed yet; and the `llm_calls` and `tool_calls` rows.
 
@@ -228,4 +228,4 @@ Residual risks:
 - **Cassettes.** Committed cassettes contain synthetic prompts only (policy). Credential scrubbing does not cover content, so a future recording with real content needs its own review.
 - **SDK debug logging.** Quartet sets no SDK log level. If someone enables DEBUG on a third-party SDK logger, request content, including prompts, can reach the logs. Logging configuration is Phase 8.
 - **Retries.** At most four attempts, bounded by the step clock.
-- **Unverified live behaviour.** Live cache behaviour, the model catalog's limits and fallback lists, and the OpenAI SDK against the live API are unproven until the Task 15 gate. Prices are a dated snapshot in `pricing.toml`, which Task 15 re-verifies.
+- **Unverified live behaviour.** Live cache behaviour, the model catalog's limits and fallback lists, and the OpenAI SDK against the live API are unproven until the Phase 2 live-verification gate. Prices are a dated snapshot in `pricing.toml`, which that gate re-verifies.

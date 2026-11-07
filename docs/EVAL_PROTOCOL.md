@@ -76,7 +76,7 @@ Cost per completed task (USD), median wall-clock time, tokens by role and model,
 - **If a target is missed, the resume shows the measured number** (for example, "58% (95% CI 46–70%) first-pass completion on 60 scoped issues"), or the bullet is reworded. This rule is not negotiable.
 
 ### 7.4 Budget (estimate; Phase 5 measures the real cost per task)
-Prices: Opus 5.5 at $4 per million input tokens and $20 per million output, cache reads $0.20 per million (Anthropic reference, 2026-10). `gpt-6.1-sol` at $2/$10 per million, cache reads $0.10, and cache writes billed at 1.25× input for 30 minutes or 2.5× for 12 hours (OpenAI pricing page, retrieved 2026-11-06). Opus 5.5 re-checked at $4/$20 and $0.20 (Anthropic pricing page, retrieved 2026-11-07 UTC). With prompt caching and four roles, the working estimate is **$2–4 per task-run**.
+Prices: Opus 5.5 at $4 per million input tokens and $20 per million output, cache reads $0.20 per million (Anthropic reference, 2026-10). `gpt-6.1-sol` at $2/$10 per million (standard tier; requests above 272,000 input tokens use long-context rates), cache reads $0.10, and cache writes billed at 1.25× input for 30 minutes or 2.5× for 12 hours (OpenAI pricing page, retrieved 2026-11-06). Opus 5.5 re-checked at $4/$20 and $0.20 (Anthropic pricing page, retrieved 2026-11-07 UTC). With prompt caching and four roles, the working estimate is **$2–4 per task-run**.
 
 | Line | Task-runs | Core? |
 |---|---|---|

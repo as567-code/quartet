@@ -41,4 +41,4 @@ uv run quartet llm smoke --max-usd 1.00   # one call per artifact schema, plus a
 uv run pytest -m live                     # live tests: tool loop, prompt-cache read, smoke
 ```
 
-The expected cost of all three is under about $2 (an estimate). The smoke run stops at its `--max-usd` cap, and each other live test caps its own runs at $0.25.
+The smoke run stops at its `--max-usd` cap (1.00), and `pytest -m live` runs the same smoke check with that cap. Each run in the other live tests is capped at $0.25; the cache test makes two runs. Within `pytest -m live`, the caps add up to $2.00 at most; the expected spend is well below that (an estimate).
