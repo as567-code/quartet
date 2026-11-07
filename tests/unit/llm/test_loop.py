@@ -7,6 +7,7 @@ from typing import Any
 
 import anthropic
 import pytest
+from opentelemetry.trace import StatusCode
 
 from quartet.domain.artifacts import Plan
 from quartet.llm.base import (
@@ -79,7 +80,7 @@ async def test_duplicate_tool_names_rejected():
         await step([FakeTurn(final=plan_json())], toolbox=tb)
 
 
-async def test_invalid_tool_input_not_executed():
+async def test_invalid_tool_input_not_executed(span_exporter):
     tb = ScriptedToolbox({"read_file": ok("x")})
     _, fake, rec = await step(
         [FakeTurn(tool_calls=(("c1", "read_file", {"path": 3}),)), FakeTurn(final=plan_json())],
@@ -87,6 +88,8 @@ async def test_invalid_tool_input_not_executed():
     )
     (res,) = fake.tool_results[0]
     assert tb.calls == [] and res.is_error and "path" in res.content and rec.tools[0].is_error
+    tool = next(s for s in span_exporter.get_finished_spans() if s.name == "tool.call")
+    assert tool.status.status_code is StatusCode.ERROR
 
 
 async def test_invalid_tool_input_message_has_no_values():
@@ -104,11 +107,13 @@ async def test_invalid_tool_input_message_has_no_values():
     )
 
 
-async def test_unknown_tool_is_error():
+async def test_unknown_tool_is_error(span_exporter):
     _, fake, _ = await step(
         [FakeTurn(tool_calls=(("c1", "rm_rf", {}),)), FakeTurn(final=plan_json())]
     )
     assert fake.tool_results[0][0].is_error and "unknown tool" in fake.tool_results[0][0].content
+    tool = next(s for s in span_exporter.get_finished_spans() if s.name == "tool.call")
+    assert tool.status.status_code is StatusCode.ERROR
 
 
 async def test_parallel_calls_one_invalid():
@@ -219,7 +224,12 @@ async def test_spans_and_records_carry_no_content(span_exporter):
     marker = "MARKER-7f3a"
     await step(
         [
-            FakeTurn(tool_calls=(("c1", "read_file", {"path": marker}),)),
+            FakeTurn(
+                tool_calls=(
+                    ("c1", "read_file", {"path": marker}),
+                    ("c2", f"{marker}-tool", {}),
+                )
+            ),
             FakeTurn(final=plan_json(summary=marker)),
         ],
         toolbox=ScriptedToolbox({"read_file": ok(marker)}),
@@ -362,3 +372,33 @@ async def test_wall_clock_cut_off_call_writes_no_row():
     with pytest.raises(BudgetExceeded) as e:
         await run_with(Slow([FakeTurn(final=plan_json())]), rec, max_wall_seconds=0.1)
     assert e.value.kind == "wall_clock" and rec.llm == []
+
+
+async def test_unknown_tool_name_and_bad_call_id_never_reach_telemetry(span_exporter):
+    rec = ListRecorder()
+    _, fake, _ = await step(
+        [
+            FakeTurn(tool_calls=(("MARKER call id with spaces", "MARKER-tool-9z", {}),)),
+            FakeTurn(final=plan_json()),
+        ],
+        recorder=rec,
+    )
+    assert rec.tools[0].tool == "<unknown>" and rec.tools[0].call_id == "<invalid>"
+    assert fake.tool_results[0][0].call_id == "MARKER call id with spaces"
+    for s in span_exporter.get_finished_spans():
+        assert all("MARKER" not in str(v) for v in s.attributes.values())
+
+
+async def test_provider_error_with_billed_turn_is_recorded(span_exporter):
+    class Billed(FakeProvider):
+        async def complete(self, *, timeout):
+            turn = await super().complete(timeout=timeout)
+            raise ProviderError("bad turn", retryable=False, turn=turn)
+
+    rec = ListRecorder()
+    with pytest.raises(ProviderError) as e:
+        await run_with(Billed([FakeTurn(final="{}")]), rec)
+    assert len(rec.llm) == 1 and rec.llm[0].cost_usd > 0 and rec.llm[0].attempts == 1
+    assert len(e.value.calls) == 1
+    llm = next(s for s in span_exporter.get_finished_spans() if s.name == "llm.call")
+    assert llm.status.status_code is StatusCode.ERROR

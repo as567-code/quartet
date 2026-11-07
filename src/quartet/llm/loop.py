@@ -7,6 +7,7 @@ tool-executor boundary below. ``asyncio.CancelledError`` always propagates.
 """
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -64,6 +65,7 @@ REPAIR_TEMPLATE = (
 )
 TRUNCATED_PROBLEM = "output truncated at the output token limit; reply more concisely"
 MAX_PROBLEMS = 20
+_SAFE_CALL_ID = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 
 class StopKind(StrEnum):
@@ -236,6 +238,7 @@ class _Step:
                 billed = provider_error.turn
                 if isinstance(billed, ProviderTurn):
                     # The vendor answered but the turn is unusable; its usage is still owed.
+                    # Failed attempts before it billed nothing, so attempts is 1.
                     await self._record(billed, 1, latency_ms, span)
                 mark_error(span, type(provider_error).__name__, str(provider_error))
             elif timed_out:
@@ -285,8 +288,12 @@ class _Step:
         outcome = ToolOutcome("", True)
         expired = False
         started = deps.clock()
-        with tool_span(req.name, req.call_id) as span:
-            validator = self.validators.get(req.name)
+        # Model-chosen identifiers never reach telemetry unless they are declared or well-formed.
+        validator = self.validators.get(req.name)
+        safe_name = req.name if validator is not None else "<unknown>"
+        safe_id = req.call_id if _SAFE_CALL_ID.fullmatch(req.call_id) else "<invalid>"
+        marked = False
+        with tool_span(safe_name, safe_id) as span:
             problems = "" if validator is None else _argument_problems(validator, req.arguments)
             if validator is None:
                 outcome = ToolOutcome("unknown tool", True)
@@ -303,14 +310,17 @@ class _Step:
                         name = type(exc).__name__
                         outcome = ToolOutcome(f"{name}: {deps.redactor.redact(str(exc))}", True)
                         mark_error(span, name, name)
+                        marked = True
             if expired:
                 mark_error(span, "BudgetExceeded", "wall_clock")
+            elif outcome.is_error and not marked:
+                mark_error(span, "ToolError", "ToolError")
         if expired:
             raise self._wall_clock()
         duration_ms = max(0, int((deps.clock() - started) * 1000))
         args = cap_args(redact_value(dict(req.arguments or {}), deps.redactor))
         await self.recorder.tool_call(
-            ToolCallRecord(req.name, req.call_id, args, outcome.is_error, duration_ms)
+            ToolCallRecord(safe_name, safe_id, args, outcome.is_error, duration_ms)
         )
         content = wrap_untrusted("tool_output", cap_tool_output(outcome.content), nonce=self.nonce)
         return ToolResult(req.call_id, content, outcome.is_error)
