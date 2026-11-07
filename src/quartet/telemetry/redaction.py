@@ -2,7 +2,7 @@
 
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 from urllib.parse import quote
 
@@ -16,28 +16,42 @@ _MIN_SECRET_LENGTH = 8
 # Left edge of an sk- key: not mid-word, but still after an escaped newline or a %XX escape.
 _SK_LEFT = r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt])|(?<=%[0-9A-Fa-f]{2}))"
 
+_SCHEME = r"(?:basic|bearer|token|digest|apikey|negotiate|ntlm|ssws)"
+# A quoted value with backslash escapes; the closing quote may be missing (unterminated).
+_QUOTED = r"""(?:(?P<dq>")(?:\\.|[^"\\\r\n])*(?P<dqc>"?)|(?P<sq>')(?:\\.|[^'\\\r\n])*(?P<sqc>'?))"""
+
+
+def _keep_quotes(m: re.Match[str]) -> str:
+    """Replace a matched value with REDACTED, keeping the quote characters around it."""
+    opening = m.group("dq") or m.group("sq") or ""
+    closing = m.group("dqc") or m.group("sqc") or ""
+    return f"{m.group(1)}{m.group(2)}{opening}{REDACTED}{closing}"
+
+
 # (compiled pattern, replacement); applied in this order after the exact secret values.
-PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+PATTERNS: tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...] = (
     (re.compile(_SK_LEFT + r"sk-ant-[A-Za-z0-9_\-]{8,}"), REDACTED),
     (re.compile(_SK_LEFT + r"sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}"), REDACTED),
     (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), REDACTED),
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), REDACTED),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{8,}=*"), REDACTED),
-    # 6a: whole Authorization header value (any scheme) up to end of line or closing quote.
-    (
-        re.compile(r"(?i)(?<![A-Za-z0-9])(authorization)([\"']?\s*[:=]\s*[\"']?)[^\r\n\"']+"),
-        rf"\1\2{REDACTED}",
-    ),
-    # 6b: key and password fields. A known auth scheme word is skipped so the credential after it
-    # is redacted; a quoted value is redacted up to its closing quote, otherwise one token.
+    # 6a: whole Authorization header value (any scheme): a quoted value through its closing quote
+    # (escapes honoured), else to end of line or the first quote.
     (
         re.compile(
-            r"(?i)(?<![A-Za-z0-9])(x-api-key|api[_-]?key|password|passwd)"
-            r"([\"']?\s*[:=]\s*[\"']?)"
-            r"(?:(?:basic|bearer|token|digest|apikey|negotiate|ntlm|ssws)\s+)?"
-            r"(?:(?<=\")[^\"\r\n]*|(?<=')[^'\r\n]*|[^\s\"',]+)"
+            r"(?i)(?<![A-Za-z0-9])(authorization)([\"']?\s*[:=]\s*)"
+            rf"(?:(?:{_SCHEME}\s+)?{_QUOTED}|[^\r\n\"']+)"
         ),
-        rf"\1\2{REDACTED}",
+        _keep_quotes,
+    ),
+    # 6b: key and password fields. VALUE := QUOTED | (SCHEME ws)? (QUOTED | TOKEN); the quotes of a
+    # quoted value are kept around the redaction.
+    (
+        re.compile(
+            r"(?i)(?<![A-Za-z0-9])(x-api-key|api[_-]?key|password|passwd)([\"']?\s*[:=]\s*)"
+            rf"(?:{_SCHEME}\s+)?(?:{_QUOTED}|[^\s\"',]+)"
+        ),
+        _keep_quotes,
     ),
     (
         re.compile(r"(postgres(?:ql)?(?:\+psycopg)?://[^:/\s@]+:)[^@\s]+@"),

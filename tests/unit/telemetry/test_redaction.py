@@ -1,4 +1,6 @@
 import logging
+import re
+import time
 
 import pytest
 from pydantic import SecretStr
@@ -251,12 +253,58 @@ def test_keyword_scheme_separator_matrix_never_leaks(keyword, scheme, separator)
         ('password: "my secret pass"', ["my", "secret", "pass"]),
         ("password='my secret pass'", ["my", "secret", "pass"]),
         ('{"api_key": "two words here", "x": 1}', ["two", "words", "here"]),
+        ('password: "Basic my secret pass"', ["my", "secret", "pass"]),
+        ("api_key='Token two words'", ["two", "words"]),
+        ('"authorization": "Bearer ab\\"cd1234567890", "next": 1', ["cd1234567890"]),
+        ('password: "Basic abc def"', ["abc", "def"]),
+        ('password: "Token abc def ghi"', ["abc", "def", "ghi"]),
+        ("password: 'Token abc def'", ["abc", "def"]),
+        ('password: Basic "abc def"', ["abc", "def"]),
+        ('Authorization: Bearer "abc def"', ["abc", "def"]),
     ],
 )
 def test_quoted_multi_word_values_fully_redacted(text, leaks):
     out = Redactor().redact(text)
     assert REDACTED in out
-    assert not any(word in out.replace("password", "").replace("api_key", "") for word in leaks)
+    # Look only past the first separator so "pass" is not hidden by the field name "password".
+    value_part = re.split(r"[:=]\s*", out, maxsplit=1)[-1]
+    for word in leaks:
+        assert word not in value_part
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('password: "Basic my secret pass"', f'password: "{REDACTED}"'),
+        ("api_key='Token two words'", f"api_key='{REDACTED}'"),
+        (
+            '"authorization": "Bearer ab\\"cd1234567890", "next": 1',
+            f'"authorization": "{REDACTED}", "next": 1',
+        ),
+    ],
+)
+def test_quoted_values_keep_their_quotes_around_redaction(text, expected):
+    assert Redactor().redact(text) == expected
+
+
+CRED3 = "alpha" + "beta " + "gamma" + "delta " + "zeta" + "omega"
+CRED3_WORDS = ["alphabeta", "gammadelta", "zetaomega"]
+
+
+@pytest.mark.parametrize("keyword", KEYWORDS)
+@pytest.mark.parametrize("scheme", SCHEMES)
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_quoted_three_word_matrix_never_leaks(keyword, scheme, quote):
+    out = Redactor().redact(f"{keyword}: {quote}{scheme}{CRED3}{quote}, next")
+    assert not any(word in out for word in CRED3_WORDS)
+    assert f"{quote}{REDACTED}{quote}" in out and ", next" in out
+
+
+def test_quote_scanning_is_linear_on_adversarial_input():
+    text = "password: " + '" ' * 50_000
+    start = time.perf_counter()
+    Redactor().redact(text)
+    assert time.perf_counter() - start < 0.5
 
 
 def test_quoted_value_keeps_following_json_field_and_unquoted_keeps_text():
