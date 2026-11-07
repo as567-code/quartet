@@ -37,6 +37,10 @@ class StepBudget:
         self._last_prompt_tokens = 0
 
     @property
+    def limits(self) -> StepLimits:
+        return self._limits
+
+    @property
     def turns_used(self) -> int:
         return self._turns
 

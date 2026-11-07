@@ -180,3 +180,22 @@ async def test_provider_error_message_redacted():
     with pytest.raises(ProviderError) as e:
         await run([err])
     assert key not in str(e.value) and "401" in str(e.value) and e.value.__cause__ is None
+    assert e.value.__context__ is None
+
+
+async def test_wall_clock_error_reports_configured_limit_after_deadline():
+    clock = FakeClock()
+    budget = StepBudget(limits(max_wall_seconds=30.0), clock=clock)
+    queue: list[Any] = [status_error(anthropic.InternalServerError, 500)]
+
+    async def attempt(timeout: float) -> Any:
+        clock.t = 35.0
+        raise queue.pop(0)
+
+    with pytest.raises(BudgetExceeded) as e:
+        await call_with_retries(
+            attempt, budget=budget, policy=RetryPolicy(), redactor=Redactor(), rand=lambda: 0.5
+        )
+    assert e.value.kind == "wall_clock"
+    assert e.value.limit == 30.0 and e.value.used >= 35.0
+    assert e.value.__context__ is None

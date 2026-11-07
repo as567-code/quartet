@@ -120,9 +120,13 @@ async def call_with_retries[T](
     while True:
         n += 1
         budget.check_wall_clock()
+        failure: Exception | None = None
+        delay = 0.0
         try:
             return await attempt(budget.remaining_seconds()), n
         except (anthropic.APIError, openai.APIError, ProviderError) as exc:
+            # Decide inside the block, raise outside it: raising here would leave the
+            # unredacted SDK exception in ``__context__``.
             decision = classify(exc)
             if decision is None:  # pragma: no cover - the except clause names only classified types
                 raise
@@ -131,25 +135,33 @@ async def call_with_retries[T](
                 f"{redactor.redact(str(exc))}"
             )
             if not decision.retryable:
-                raise _fail(exc, decision, text, retryable=False) from None
-            if n >= policy.max_attempts:
-                raise _fail(
+                failure = _fail(exc, decision, text, retryable=False)
+            elif n >= policy.max_attempts:
+                failure = _fail(
                     exc, decision, f"gave up after {n} attempts: {text}", retryable=True
-                ) from None
-            if decision.retry_after is not None:
-                if decision.retry_after > policy.max_retry_after_seconds:
-                    raise _fail(
-                        exc,
-                        decision,
-                        f"retry-after {decision.retry_after:g}s exceeds the "
-                        f"{policy.max_retry_after_seconds:g}s cap: {text}",
-                        retryable=True,
-                    ) from None
-                delay = decision.retry_after
+                )
+            elif (
+                decision.retry_after is not None
+                and decision.retry_after > policy.max_retry_after_seconds
+            ):
+                failure = _fail(
+                    exc,
+                    decision,
+                    f"retry-after {decision.retry_after:g}s exceeds the "
+                    f"{policy.max_retry_after_seconds:g}s cap: {text}",
+                    retryable=True,
+                )
             else:
-                delay = rand() * min(policy.cap_seconds, policy.base_seconds * 2 ** (n - 1))
-            remaining = budget.remaining_seconds()
-            if delay >= remaining:
-                limit = budget.totals().elapsed_seconds + remaining
-                raise BudgetExceeded("wall_clock", limit - remaining, limit) from None
+                if decision.retry_after is not None:
+                    delay = decision.retry_after
+                else:
+                    delay = rand() * min(policy.cap_seconds, policy.base_seconds * 2 ** (n - 1))
+                if delay >= budget.remaining_seconds():
+                    failure = BudgetExceeded(
+                        "wall_clock",
+                        budget.totals().elapsed_seconds,
+                        budget.limits.max_wall_seconds,
+                    )
+        if failure is not None:
+            raise failure
         await sleep(delay)
