@@ -23,10 +23,16 @@ PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), REDACTED),
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), REDACTED),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{8,}=*"), REDACTED),
+    # 6a: whole Authorization header value (any scheme) up to end of line or closing quote.
+    (
+        re.compile(r"(?i)(?<![A-Za-z0-9])(authorization)([\"']?\s*[:=]\s*[\"']?)[^\r\n\"']+"),
+        rf"\1\2{REDACTED}",
+    ),
+    # 6b: single-token secret values for key and password fields.
     (
         re.compile(
-            r"(?i)(?<![A-Za-z0-9])(x-api-key|api[_-]?key|authorization|password|passwd)"
-            r"([\"']?\s*[:=]\s*[\"']?)(?:(?:basic|bearer|token|digest)\s+)?[^\s\"',]+"
+            r"(?i)(?<![A-Za-z0-9])(x-api-key|api[_-]?key|password|passwd)"
+            r"([\"']?\s*[:=]\s*[\"']?)[^\s\"',]+"
         ),
         rf"\1\2{REDACTED}",
     ),

@@ -189,3 +189,43 @@ def test_alphabetic_values_do_not_swallow_following_text():
     assert r.redact("api-key: mysecretvalue and more").endswith("and more")
     assert "secret " not in r.redact("password=secret host=db")
     assert "dXNlcjpz" not in r.redact("Authorization: Basic dXNlcjpz")
+
+
+@pytest.mark.parametrize(
+    ("header", "credential"),
+    [
+        ("Authorization: Negotiate YIIabc123456", "YIIabc123456"),
+        ("Authorization: NTLM TlRMTVNTUAAB", "TlRMTVNTUAAB"),
+        ("Authorization: ApiKey " + "k-" + "1234567890", "k-1234567890"),
+        ("Authorization: SSWS 00abcDEF123456", "00abcDEF123456"),
+        ("Authorization: Basic dXNlcjpzZWNyZXQ=", "dXNlcjpzZWNyZXQ"),
+        ("Authorization: Bearer abcdefgh12345678", "abcdefgh12345678"),
+        ("Authorization: token abcdefghijklmnop1234", "abcdefghijklmnop1234"),
+        ("Authorization: Digest abcdef1234567890", "abcdef1234567890"),
+    ],
+)
+def test_authorization_value_fully_redacted(header, credential):
+    out = Redactor().redact(header)
+    assert credential not in out and REDACTED in out
+
+
+def test_json_authorization_keeps_following_fields():
+    out = Redactor().redact('"authorization": "Bearer abcdefgh12345678", "next": 1')
+    assert "abcdefgh12345678" not in out and REDACTED in out and '"next": 1' in out
+
+
+@pytest.mark.parametrize(
+    ("text", "leak", "keep"),
+    [
+        ("password=secret host=db", "secret", "host=db"),
+        ("api-key: mysecretvalue and more", "mysecretvalue", "and more"),
+        ("x-api-key: zzzzzzzzzzzz", "zzzzzzzzzzzz", None),
+        ('"api_key": "k123456789"', "k123456789", None),
+        ("ANTHROPIC_API_KEY=plainvalue123456", "plainvalue123456", None),
+    ],
+)
+def test_single_token_keys_redact_one_token(text, leak, keep):
+    out = Redactor().redact(text)
+    assert leak not in out and REDACTED in out
+    if keep is not None:
+        assert keep in out
