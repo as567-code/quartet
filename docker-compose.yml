@@ -1,0 +1,30 @@
+name: quartet
+
+services:
+  postgres:
+    image: postgres:16@sha256:933463a6c8eba2b9f5cd414138738cd8d5519cd2c471214c222652f547a66a32
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: quartet
+      QUARTET_MIGRATOR_PASSWORD: ${QUARTET_MIGRATOR_PASSWORD:?set QUARTET_MIGRATOR_PASSWORD in .env}
+      QUARTET_APP_PASSWORD: ${QUARTET_APP_PASSWORD:?set QUARTET_APP_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+      - quartet_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d quartet"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.23.0@sha256:3823829974ccfc2485d2e48b165579091f32295022ae80ca49704e2f4834116e
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+
+volumes:
+  quartet_pgdata:

@@ -1,0 +1,77 @@
+[project]
+name = "quartet"
+version = "0.1.0"
+description = "Quartet: a multi-agent coding orchestrator"
+readme = "README.md"
+authors = [
+    { name = "Aditya", email = "adityaswaroop23@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.1",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.2",
+    "sqlalchemy>=2.0",
+    "typer>=0.28.0",
+]
+
+[project.scripts]
+quartet = "quartet.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+link-mode = "copy"
+
+[tool.uv.workspace]
+members = [
+    "packages/quartet-workspace",
+]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "hypothesis>=6.170.15",
+    "mypy>=2.4.1",
+    "pip-audit>=2.10.1",
+    "pre-commit>=4.7.0",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "pyyaml>=6.0.3",
+    "ruff>=0.17.4",
+    "time-machine>=3.6.0",
+    "types-pyyaml>=6.0.12.20261103",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["tests/repo_hygiene/fixtures", "docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S603", "S607"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+exclude = ["tests/repo_hygiene/fixtures/"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: needs Postgres",
+    "live: needs real API keys",
+]
+addopts = "-ra --strict-markers -p pytester --ignore=tests/repo_hygiene/fixtures"
+
+[tool.coverage.report]
+fail_under = 85

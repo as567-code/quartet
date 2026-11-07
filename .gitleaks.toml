@@ -1,0 +1,8 @@
+title = "Quartet gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "docs/plans contains a deliberately fake ghp_ token used to demonstrate the secret gate"
+paths = ['''^docs/plans/''']
