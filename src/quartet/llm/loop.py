@@ -9,7 +9,7 @@ tool-executor boundary below. ``asyncio.CancelledError`` always propagates.
 import asyncio
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ValidationError
 
+from quartet.db.sanitize import sanitize_for_storage
 from quartet.llm.base import (
     MAX_ARTIFACT_REPAIRS,
     ArtifactInvalid,
@@ -185,15 +186,19 @@ class _Step:
             self.budget.limits.max_wall_seconds,
         )
 
+    def _gate(self) -> None:
+        """The budget gate: before every HTTP attempt, retries included."""
+        floor = (
+            Decimal(self.budget.last_prompt_tokens)
+            * self.deps.pricing.cache_read_rate(self.config.model)
+            / Decimal(1_000_000)
+        )
+        self.budget.check_before_call(floor)
+
     async def drive(self) -> RoleResult:
-        config, adapter, budget, deps = self.config, self.adapter, self.budget, self.deps
+        adapter = self.adapter
         while True:
-            floor = (
-                Decimal(budget.last_prompt_tokens)
-                * deps.pricing.cache_read_rate(config.model)
-                / Decimal(1_000_000)
-            )
-            budget.check_before_call(floor)
+            self._gate()
             turn = await self._call()
             if turn.stop is StopKind.REFUSAL:
                 raise ModelRefused(provider=adapter.provider, category=turn.refusal_category)
@@ -210,9 +215,18 @@ class _Step:
         config, adapter, budget, deps = self.config, self.adapter, self.budget, self.deps
         timed_out = False
         provider_error: ProviderError | None = None
+        budget_error: BudgetExceeded | None = None
         turn: ProviderTurn | None = None
         attempts = 1
         started = deps.clock()
+
+        async def on_billed(billed: object) -> None:
+            # A retryable failure that the vendor billed: it gets its own row now, and its
+            # usage counts against the budget before the next attempt is allowed.
+            if isinstance(billed, ProviderTurn):
+                latency = max(0, int((deps.clock() - started) * 1000))
+                await self._record(replace(billed, stop_reason="failed"), 1, latency, span)
+
         with llm_call_span(
             adapter.provider, config.model, config.role, config.max_output_tokens, config.effort
         ) as span:
@@ -226,6 +240,8 @@ class _Step:
                             redactor=deps.redactor,
                             sleep=deps.sleep,
                             rand=deps.rand,
+                            on_billed=on_billed,
+                            before_retry=self._gate,
                         )
                 except TimeoutError:
                     if not cm.expired():
@@ -233,14 +249,19 @@ class _Step:
                     timed_out = True
             except ProviderError as err:
                 provider_error = err
+            except BudgetExceeded as err:
+                budget_error = err
             latency_ms = max(0, int((deps.clock() - started) * 1000))
             if provider_error is not None:
                 billed = provider_error.turn
                 if isinstance(billed, ProviderTurn):
                     # The vendor answered but the turn is unusable; its usage is still owed.
-                    # Failed attempts before it billed nothing, so attempts is 1.
+                    # Retryable billed failures were recorded per attempt by ``on_billed``;
+                    # this one is the final, non-retryable attempt: one row, attempts 1.
                     await self._record(billed, 1, latency_ms, span)
-                mark_error(span, type(provider_error).__name__, str(provider_error))
+                mark_error(span, type(provider_error).__name__, provider_error.summary)
+            elif budget_error is not None:
+                mark_error(span, "BudgetExceeded", budget_error.kind)
             elif timed_out:
                 # A cut-off call has unknown usage, so no llm_calls row is written.
                 mark_error(span, "BudgetExceeded", "wall_clock")
@@ -248,6 +269,8 @@ class _Step:
                 await self._record(turn, attempts, latency_ms, span)
         if provider_error is not None:
             raise provider_error
+        if budget_error is not None:
+            raise budget_error
         if timed_out or turn is None:
             raise self._wall_clock()
         unpriced = [p.model for p in turn.usage_parts if not deps.pricing.has(p.model)]
@@ -318,7 +341,9 @@ class _Step:
         if expired:
             raise self._wall_clock()
         duration_ms = max(0, int((deps.clock() - started) * 1000))
-        args = cap_args(redact_value(dict(req.arguments or {}), deps.redactor))
+        args = cap_args(
+            sanitize_for_storage(redact_value(dict(req.arguments or {}), deps.redactor))
+        )
         await self.recorder.tool_call(
             ToolCallRecord(safe_name, safe_id, args, outcome.is_error, duration_ms)
         )
@@ -378,5 +403,5 @@ async def run_step(
             failure = err
         failure.totals = step.budget.totals()
         failure.calls = tuple(step.records)
-        mark_error(span, type(failure).__name__, str(failure))
+        mark_error(span, type(failure).__name__, failure.summary)
         raise failure

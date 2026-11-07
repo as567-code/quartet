@@ -14,6 +14,7 @@ from quartet.llm.base import (
     PricingUnavailable,
     Provider,
     ProviderError,
+    RecorderError,
     ToolSpec,
     Usage,
 )
@@ -61,6 +62,22 @@ def test_tool_spec_requires_strict_schema_and_safe_name():
         )
     with pytest.raises(ValueError):
         ToolSpec("read file", "Read a file", strict)
+
+
+def test_tool_spec_rejects_an_invalid_json_schema_naming_only_the_tool():
+    bad = {"type": "strng", "properties": {"SECRET-KEY": {"type": "string"}}}
+    with pytest.raises(ValueError, match="valid JSON Schema: read_file") as info:
+        ToolSpec("read_file", "Read a file", bad)
+    assert "SECRET" not in str(info.value) and info.value.__cause__ is None
+    assert info.value.__context__ is None
+
+
+def test_summaries_hold_no_text():
+    err = ProviderError("vendor text SECRET", retryable=True, status=529, code="overloaded")
+    assert err.summary == "ProviderError (status 529, code overloaded)"
+    assert "SECRET" not in err.summary
+    assert BudgetExceeded("usd", 2, 1).summary == str(BudgetExceeded("usd", 2, 1))
+    assert RecorderError("ledger write failed (SQLSTATE 22P05)").summary.endswith("22P05)")
 
 
 def test_usage_arithmetic():

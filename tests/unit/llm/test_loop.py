@@ -402,3 +402,72 @@ async def test_provider_error_with_billed_turn_is_recorded(span_exporter):
     assert len(e.value.calls) == 1
     llm = next(s for s in span_exporter.get_finished_spans() if s.name == "llm.call")
     assert llm.status.status_code is StatusCode.ERROR
+
+
+class BilledFailures(FakeProvider):
+    """Raises a retryable, billed ``ProviderError`` for the first ``failures`` calls."""
+
+    def __init__(self, script: list[FakeTurn], failures: int) -> None:
+        super().__init__(script)
+        self._failures = failures
+
+    async def complete(self, *, timeout):
+        turn = await super().complete(timeout=timeout)
+        if self.calls <= self._failures:
+            billed = replace(turn, stop_reason="failed")
+            raise ProviderError(
+                "response failed: server_error", retryable=True, code="server_error", turn=billed
+            )
+        return turn
+
+
+async def test_billed_retryable_failure_is_recorded_and_the_budget_gate_stops_the_retry(
+    span_exporter,
+):
+    big = Usage(100_000, 0, 0, 0, 0, 0)  # about $0.50 on this model
+    fake = BilledFailures([FakeTurn(usage=big)] * 3 + [FakeTurn(final=plan_json())], failures=3)
+    rec = ListRecorder()
+    with pytest.raises(BudgetExceeded) as e:
+        await run_with(fake, rec, max_usd=Decimal("0.10"), max_total_tokens=1_000_000)
+    assert e.value.kind == "usd"
+    assert fake.calls == 1  # no further complete() after the breaching attempt
+    (row,) = rec.llm
+    assert row.stop_reason == "failed" and row.attempts == 1 and row.cost_usd > Decimal("0.10")
+    assert e.value.totals is not None and e.value.totals.cost_usd == row.cost_usd
+    assert len(e.value.calls) == 1
+    llm = next(s for s in span_exporter.get_finished_spans() if s.name == "llm.call")
+    assert llm.status.status_code is StatusCode.ERROR and llm.attributes["error.type"] == (
+        "BudgetExceeded"
+    )
+
+
+async def test_billed_retryable_failures_then_success_record_every_attempt():
+    fake = BilledFailures([FakeTurn(), FakeTurn(), FakeTurn(final=plan_json())], failures=2)
+    rec = ListRecorder()
+    result = await run_with(fake, rec, max_turns=10)
+    assert fake.calls == 3 and len(rec.llm) == 3
+    assert [r.stop_reason for r in rec.llm] == ["failed", "failed", "end_turn"]
+    assert [r.attempts for r in rec.llm] == [1, 1, 3]  # the last row: HTTP attempts of the call
+    assert result.totals.turns == 3
+    assert result.totals.cost_usd == sum((r.cost_usd for r in rec.llm), Decimal(0))
+    assert result.calls == tuple(rec.llm)
+
+
+async def test_billed_failure_that_exhausts_retries_is_recorded_once_per_attempt():
+    fake = BilledFailures([FakeTurn()] * 4, failures=4)
+    rec = ListRecorder()
+    with pytest.raises(ProviderError) as e:
+        await run_with(fake, rec, max_turns=10)
+    assert len(rec.llm) == 4 and fake.calls == 4 and e.value.turn is None
+    assert all(r.stop_reason == "failed" and r.attempts == 1 for r in rec.llm)
+
+
+async def test_provider_error_span_description_holds_no_vendor_text(span_exporter):
+    err = status_error(anthropic.BadRequestError, 400, message="echo: MARKER-body-text")
+    with pytest.raises(ProviderError) as e:
+        await step([FakeTurn(raises=err)])
+    assert "MARKER" in str(e.value)  # the exception itself keeps the redacted text
+    for s in span_exporter.get_finished_spans():
+        assert "MARKER" not in str(s.status.description)
+    llm = next(s for s in span_exporter.get_finished_spans() if s.name == "llm.call")
+    assert llm.status.description == "ProviderError (status 400, code None)"

@@ -12,6 +12,8 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel
 
 from quartet.domain.artifacts import ARTIFACT_MODELS, strictify_schema
@@ -88,6 +90,13 @@ class ToolSpec:
     def __post_init__(self) -> None:
         if not _TOOL_NAME.fullmatch(self.name):
             raise ValueError("tool name must match ^[A-Za-z0-9_-]{1,64}$")
+        schema_ok = True
+        try:
+            Draft202012Validator.check_schema(dict(self.input_schema))
+        except SchemaError:
+            schema_ok = False  # raised below: the SchemaError text would quote schema content
+        if not schema_ok:
+            raise ValueError(f"tool input schema is not a valid JSON Schema: {self.name}")
         if dict(self.input_schema) != strictify_schema(self.input_schema):
             raise ValueError(f"tool input schema is not strict: {self.name}")
 
@@ -242,6 +251,11 @@ class LLMError(Exception):
         self.totals: StepTotals | None = None
         self.calls: tuple[CallRecord, ...] = ()
 
+    @property
+    def summary(self) -> str:
+        """Content-free text for span descriptions and CLI output (this message holds no text)."""
+        return str(self)
+
 
 class BudgetExceeded(LLMError):
     def __init__(
@@ -291,8 +305,17 @@ class ProviderError(LLMError):
         # The ProviderTurn (Task 8) whose usage must still be billed.
         self.turn = turn
 
+    @property
+    def summary(self) -> str:
+        """Class, status and code only: the message may hold redacted vendor text."""
+        return f"{type(self).__name__} (status {self.status}, code {self.code})"
+
 
 class PricingUnavailable(LLMError):
     def __init__(self, *, model: str) -> None:
         super().__init__(f"no price for model {model}")
         self.model = model
+
+
+class RecorderError(LLMError):
+    """The ledger write failed. The message carries the SQLSTATE only, never row content."""

@@ -199,3 +199,80 @@ async def test_wall_clock_error_reports_configured_limit_after_deadline():
     assert e.value.kind == "wall_clock"
     assert e.value.limit == 30.0 and e.value.used >= 35.0
     assert e.value.__context__ is None
+
+
+async def _run_billed(
+    outcomes: list[Any], *, retryable: bool = True, max_attempts: int = 4
+) -> tuple[list[object], list[int], Any]:
+    billed: list[object] = []
+    gate_calls: list[int] = []
+    queue = list(outcomes)
+
+    async def attempt(timeout: float) -> Any:
+        item = queue.pop(0)
+        if item == "ok":
+            return item
+        raise ProviderError("x", retryable=retryable, turn=item)
+
+    async def on_billed(turn: object) -> None:
+        billed.append(turn)
+
+    async def sleep(_s: float) -> None:
+        return None
+
+    outcome: Any
+    try:
+        outcome = await call_with_retries(
+            attempt,
+            budget=StepBudget(limits()),
+            policy=RetryPolicy(max_attempts=max_attempts),
+            redactor=Redactor(),
+            sleep=sleep,
+            rand=lambda: 0.5,
+            on_billed=on_billed,
+            before_retry=lambda: gate_calls.append(len(billed)),
+        )
+    except ProviderError as err:
+        outcome = err
+    return billed, gate_calls, outcome
+
+
+async def test_billed_retryable_failures_are_handed_over_and_the_gate_runs_before_each_retry():
+    billed, gate_calls, outcome = await _run_billed(["t1", "t2", "ok"])
+    assert billed == ["t1", "t2"] and outcome == ("ok", 3)
+    # No gate before the first attempt; before attempts 2 and 3 the earlier turns were handed over.
+    assert gate_calls == [1, 2]
+
+
+async def test_final_retryable_failure_drops_its_turn_after_handing_it_over():
+    billed, gate_calls, outcome = await _run_billed(["t1", "t2"], max_attempts=2)
+    assert billed == ["t1", "t2"] and gate_calls == [1]
+    assert isinstance(outcome, ProviderError) and outcome.turn is None and outcome.retryable
+    assert outcome.__context__ is None
+
+
+async def test_non_retryable_failure_keeps_its_turn_for_the_caller():
+    billed, _, outcome = await _run_billed(["t1"], retryable=False)
+    assert billed == [] and isinstance(outcome, ProviderError) and outcome.turn == "t1"
+
+
+async def test_gate_error_stops_retrying():
+    calls: list[int] = []
+
+    async def attempt(timeout: float) -> Any:
+        calls.append(1)
+        raise ProviderError("x", retryable=True)
+
+    def gate() -> None:
+        raise BudgetExceeded("usd", 2, 1)
+
+    with pytest.raises(BudgetExceeded):
+        await call_with_retries(
+            attempt,
+            budget=StepBudget(limits()),
+            policy=RetryPolicy(),
+            redactor=Redactor(),
+            sleep=lambda s: asyncio.sleep(0),
+            before_retry=gate,
+        )
+    assert calls == [1]

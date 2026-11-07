@@ -1,8 +1,13 @@
 """Typed retry policy: the only retry layer (SDK clients are built with ``max_retries=0``).
 
 Backoff is full jitter, and every sleep is bounded by the step's wall-clock budget. Only the SDK
-error types named in ``classify`` are handled; anything else propagates unchanged. Re-raised
-provider errors use ``from None`` and carry redacted text only (FR-30).
+error types named in ``classify`` are handled; anything else propagates unchanged. Errors are
+decided inside the ``except`` block and raised after it exits, so the unredacted SDK exception
+never rides along in ``__context__``; they carry redacted text only (FR-30).
+
+A retryable failure that carries a billed turn is handed to ``on_billed`` (so the caller records
+it) before the retry decision, and ``before_retry`` (the budget gate) runs before every further
+HTTP attempt (FR-C1).
 """
 
 import asyncio
@@ -95,7 +100,7 @@ def classify(exc: Exception) -> RetryDecision | None:
 
 
 def _fail(
-    exc: Exception, decision: RetryDecision, message: str, *, retryable: bool
+    exc: Exception, decision: RetryDecision, message: str, *, retryable: bool, keep_turn: bool
 ) -> ProviderError:
     return ProviderError(
         message,
@@ -103,7 +108,7 @@ def _fail(
         status=decision.status,
         code=decision.code,
         request_id=decision.request_id,
-        turn=exc.turn if isinstance(exc, ProviderError) else None,
+        turn=exc.turn if keep_turn and isinstance(exc, ProviderError) else None,
     )
 
 
@@ -115,12 +120,17 @@ async def call_with_retries[T](
     redactor: Redactor,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     rand: Callable[[], float] = random.random,
+    on_billed: Callable[[object], Awaitable[None]] | None = None,
+    before_retry: Callable[[], None] | None = None,
 ) -> tuple[T, int]:
     n = 0
     while True:
         n += 1
         budget.check_wall_clock()
+        if n > 1 and before_retry is not None:
+            before_retry()
         failure: Exception | None = None
+        billed: object | None = None
         delay = 0.0
         try:
             return await attempt(budget.remaining_seconds()), n
@@ -134,11 +144,20 @@ async def call_with_retries[T](
                 f"{type(exc).__name__} (status {decision.status}, code {decision.code}): "
                 f"{redactor.redact(str(exc))}"
             )
+            # A retryable failure's billed turn goes to ``on_billed`` and is then dropped from
+            # the error, so the caller never records it twice. A final failure keeps its turn.
+            if decision.retryable and on_billed is not None and isinstance(exc, ProviderError):
+                billed = exc.turn
+            keep_turn = billed is None
             if not decision.retryable:
-                failure = _fail(exc, decision, text, retryable=False)
+                failure = _fail(exc, decision, text, retryable=False, keep_turn=keep_turn)
             elif n >= policy.max_attempts:
                 failure = _fail(
-                    exc, decision, f"gave up after {n} attempts: {text}", retryable=True
+                    exc,
+                    decision,
+                    f"gave up after {n} attempts: {text}",
+                    retryable=True,
+                    keep_turn=keep_turn,
                 )
             elif (
                 decision.retry_after is not None
@@ -150,6 +169,7 @@ async def call_with_retries[T](
                     f"retry-after {decision.retry_after:g}s exceeds the "
                     f"{policy.max_retry_after_seconds:g}s cap: {text}",
                     retryable=True,
+                    keep_turn=keep_turn,
                 )
             else:
                 if decision.retry_after is not None:
@@ -162,6 +182,8 @@ async def call_with_retries[T](
                         budget.totals().elapsed_seconds,
                         budget.limits.max_wall_seconds,
                     )
+        if billed is not None and on_billed is not None:
+            await on_billed(billed)
         if failure is not None:
             raise failure
         await sleep(delay)
