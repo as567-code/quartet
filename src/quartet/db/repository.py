@@ -11,12 +11,14 @@ raise ``UntrustedInputInvalid``) and is capped by UTF-8 *byte* length. The datab
 constraints remain as defence in depth.
 """
 
+import json
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID
 
+import sqlalchemy as sa
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -28,6 +30,8 @@ from quartet.domain.states import Role, TaskState
 TITLE_MAX_BYTES = 512
 BODY_MAX_BYTES = 65_536
 EXTERNAL_REF_MAX_BYTES = 512
+ARTIFACT_MAX_BYTES = 262_144
+TASK_ARTIFACTS_MAX_BYTES = 4_194_304
 
 
 class UntrustedInputError(ValueError):
@@ -40,6 +44,10 @@ class UntrustedInputTooLarge(UntrustedInputError):
 
 class UntrustedInputInvalid(UntrustedInputError):
     """An untrusted field cannot be encoded as UTF-8 (for example a lone surrogate)."""
+
+
+class ArtifactTooLarge(ValueError):
+    """An artifact, or a task's artifacts in total, exceed their byte cap. Sizes only."""
 
 
 def _clean(field: str, value: str, limit: int) -> str:
@@ -112,11 +120,26 @@ def save_artifact(session: Session, task_id: UUID, artifact: BaseModel) -> UUID:
     kind = next((k for k, cls in ARTIFACT_KINDS.items() if type(artifact) is cls), None)
     if kind is None:
         raise TypeError(f"{type(artifact).__name__} is not a registered artifact kind")
+    payload = artifact.model_dump(mode="json")
+    size = len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    if size > ARTIFACT_MAX_BYTES:
+        raise ArtifactTooLarge(f"artifact is {size} bytes; the limit is {ARTIFACT_MAX_BYTES}")
+    stored = session.execute(
+        sa.text(
+            "SELECT coalesce(sum(octet_length(payload::text)), 0) FROM artifacts WHERE task_id = :t"
+        ),
+        {"t": task_id},
+    ).scalar_one()
+    if int(stored) + size > TASK_ARTIFACTS_MAX_BYTES:
+        raise ArtifactTooLarge(
+            f"task artifacts would total {int(stored) + size} bytes; "
+            f"the limit is {TASK_ARTIFACTS_MAX_BYTES}"
+        )
     row = Artifact(
         task_id=task_id,
         kind=kind,
         schema_version=cast(Any, artifact).schema_version,
-        payload=artifact.model_dump(mode="json"),
+        payload=payload,
     )
     session.add(row)
     session.flush()
