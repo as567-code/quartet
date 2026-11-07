@@ -1,6 +1,6 @@
 # Quartet: Phased Build Roadmap
 
-Implements [PRD.md](PRD.md) v0.3. There are 11 phases, each one a PR. Every phase ends with the **standard gates** (PRD §11) **plus** its own security checks and review gate, listed below. Detailed, task-level plans are written one phase at a time, just before the phase starts, so they can use the real interfaces of the earlier phases. The first one is ready: [plans/phase-00-01-foundation-state-store.md](plans/phase-00-01-foundation-state-store.md).
+Implements [PRD.md](PRD.md) v0.3. There are 11 phases, each one a PR. Every phase ends with the **standard gates** (PRD §11) **plus** its own security checks and review gate, listed below. Detailed, task-level plans are written one phase at a time, just before the phase starts, so they can use the real interfaces of the earlier phases. The first one is ready: [plans/phase-00-01-foundation-state-store.md](plans/phase-00-01-foundation-state-store.md). The Phase 2 plan is [plans/phase-02-llm-provider-layer.md](plans/phase-02-llm-provider-layer.md).
 
 ## How every phase runs
 
@@ -109,14 +109,14 @@ Implements [PRD.md](PRD.md) v0.3. There are 11 phases, each one a PR. Every phas
 
 **Deliverables**
 - [ ] `llm/base.py`: `RoleRunner` protocol, `RoleConfig`, `RoleResult`, `Usage`, and the `BudgetExceeded`, `ArtifactInvalid` and `ModelRefused` errors.
-- [ ] `llm/anthropic_runner.py` per PRD §9.4. Beta tool runner, strict tools, `output_config.format`, per-role `output_config.effort`, streaming with `eager_input_streaming` and per-input validation, `refusal` handling + `fallbacks: "default"`, a cache-friendly prompt layout. **No** sampling params, **no** prefill, `tool_choice: auto` only.
-- [ ] `llm/openai_runner.py`: Responses API loop (`function_call` → `function_call_output` by `call_id`), strict flat function tools, `text.format` json_schema strict, `reasoning` effort per role.
-- [ ] `config/pricing.toml`: every price with its **source URL and date**. `gpt-6.1-sol` is verified on OpenAI's pricing page, and PRD §7.4 is re-computed from it. Plus `telemetry/cost_ledger.py`.
+- [ ] `llm/anthropic_runner.py` per PRD §9.4. Quartet's own loop over the Messages API per ADR-0004 (beta client, streamed, so `fallbacks` and `usage.iterations` are available), strict tools, `output_config.format`, per-role `output_config.effort`, client-side validation of every tool input (no `eager_input_streaming`), `refusal` handling, a per-role `fallbacks: "default"` flag (off in eval configs), a cache-friendly prompt layout. **No** sampling params, **no** prefill, `tool_choice: auto` only.
+- [ ] `llm/openai_runner.py`: Responses API loop over the raw event stream with `store=False` (`function_call` → `function_call_output` by `call_id`), strict flat function tools, `text.format` json_schema strict, `reasoning` effort per role.
+- [ ] `src/quartet/llm/pricing.toml` (P2-R7): every price with its **source URL and date**. `gpt-6.1-sol` is verified on OpenAI's pricing page, and PRD §7.4 is re-computed from it. Plus `telemetry/cost_ledger.py`.
 - [ ] `llm/budget.py`: turn, token, USD and wall-clock caps per role step, checked **before** each call.
 - [ ] Retry policy: a typed-exception chain. 429, 5xx and connection errors get jittered backoff with a cap. 400, 401 and 404 never retry.
-- [ ] `llm/fake.py`: `FakeProvider` with record and replay cassettes (auth headers scrubbed on record).
-- [ ] `config/models.toml`, holding model IDs **verified live**: Anthropic via the Models API, OpenAI via `GET /v1/models`.
-- [ ] `quartet llm smoke`: each provider must return a valid instance of **every** artifact schema (proving both accept `const` from `Literal[1]`).
+- [ ] `llm/fake.py`: `FakeProvider` for tests. Cassettes (`llm/cassette.py`) record HTTP exchanges with response headers allow-listed and request headers never stored, and replay them offline. No cassette is committed yet: Task 15 records them, with synthetic prompts only.
+- [ ] `src/quartet/llm/models.toml` (P2-R7), holding model IDs, context windows and output limits from the vendor docs (`verified_via = "docs"`). Live verification (Anthropic Models API, OpenAI `GET /v1/models`) is `quartet llm verify-models`, planned for the Task 15 gate.
+- [ ] `quartet llm smoke`: each provider must return a valid instance of **every** artifact schema (proving both accept `const` from `Literal[1]`), plus one tool round trip per provider. The run has a dollar cap (`--max-usd`, default 1.00). Live results are pending the Task 15 gate.
 
 **Exit criteria**
 - [ ] FakeProvider unit tests cover: the tool loop, a schema-invalid artifact retried at most twice and then `ArtifactInvalid`, refusal → `ModelRefused`, budget breach → `BudgetExceeded` with no further call made, and cost equal to the pricing table to the cent.
@@ -145,7 +145,7 @@ Implements [PRD.md](PRD.md) v0.3. There are 11 phases, each one a PR. Every phas
 - [ ] `leasefile.py`: reads `/quartet/leases.json` from the read-only **directory** mount on **every** write. The orchestrator updates it by writing a temp file and doing an atomic `rename` inside that directory. Writes outside the leases return `LEASE_REQUIRED`, and writes to blocked paths return `PROTECTED_PATH`.
 - [ ] `sandbox/images/workspace.Dockerfile`: `python:3.12-slim` pinned by digest, non-root user, git, ripgrep, `quartet-workspace`, and `/etc/gitconfig` with `safe.directory=*`.
 - [ ] `sandbox/docker_runner.py`: builds the `docker run -i --rm` argv with every PRD §8.4 flag, the three mounts, `GIT_DIR=/mirror/worktrees/<task_id>`, `GIT_WORK_TREE=/work`, `--user <uid>:<gid>` on Linux, a `quartet.task_id` label, and timeout handling (kill, then remove).
-- [ ] `src/quartet/mcp_client/client.py`: the `mcp` client over stdio to the container, with an allowlist filter. A compatibility check of `anthropic.lib.tools.mcp.async_mcp_tool` against the pinned `mcp`, with a small hand-written adapter as the fallback.
+- [ ] `src/quartet/mcp_client/client.py`: the `mcp` client over stdio to the container, with an allowlist filter. Converts MCP tool definitions into strict `ToolSpec`s that fit `check_strict_budget` (ADR-0004).
 
 **Exit criteria**
 - [ ] In-memory `mcp.Client` tests pass for every tool and every role allowlist.

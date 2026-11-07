@@ -1,8 +1,8 @@
 # Quartet Threat Model
 
-Status: v1 (Phase 1). Source of the security design: [PRD.md](PRD.md) §8 and §11. Every phase updates this file (gate S5, see [ROADMAP.md](ROADMAP.md)).
+Status: v2 (Phase 2). Source of the security design: [PRD.md](PRD.md) §8 and §11. Every phase updates this file (gate S5, see [ROADMAP.md](ROADMAP.md)).
 
-**Reading the controls.** Each control is labelled **implemented (Phase 0)**, **implemented (Phase 1)** or **planned (Phase N)**. A planned control does not exist yet and must not be relied on. At the end of Phase 1 the repository contains the CLI skeleton, hardened configuration loading, a loopback-only compose stack, CI security gates, and the state store: the schema and its grants, the compare-and-set state machine, the lease queue and the repository helpers. It contains no orchestrator loop, worker processes, sandbox, MCP server, agents or GitHub integration.
+**Reading the controls.** Each control is labelled **implemented (Phase 0)**, **implemented (Phase 1)** or **planned (Phase N)**. A planned control does not exist yet and must not be relied on. At the end of Phase 1 the repository contains the CLI skeleton, hardened configuration loading, a loopback-only compose stack, CI security gates, and the state store: the schema and its grants, the compare-and-set state machine, the lease queue and the repository helpers. It contains no orchestrator loop, worker processes, sandbox, MCP server, agents or GitHub integration. At the end of Phase 2 the LLM provider layer (§3.7) also exists: the per-role loop, retries, budgets, validation, redaction, telemetry and the cost ledger. The sandbox, MCP server, orchestrator loop and GitHub flow are still planned.
 
 ## 1. Assets
 
@@ -54,8 +54,8 @@ S = Spoofing, T = Tampering, R = Repudiation, I = Information disclosure, D = De
 | T | Hostile DB URL redirects the connection or smuggles libpq options | URL parsed with libpq's own parser; scheme and query keys allowlisted (`sslmode`, `connect_timeout`, `application_name`); `passfile`, `service`, `options` and similar rejected | implemented (Phase 0) |
 | T | A worker whose lease expired keeps acting on its task (split brain) | Reaping an expired lease bumps `version`, the compare-and-set token, so the previous holder's transitions fail; heartbeat refuses an expired lease; `claim()` reaps before claiming | implemented (Phase 1). Fencing starts at the reap: a holder whose lease has expired but not yet been reaped can still transition until the next `claim()` or `reap_expired()` |
 | R | An action cannot be attributed | Append-only `events` table; decision logging (`quartet intervene`) | append-only `events` implemented (Phase 1): every `transition()`, `create_task()` and lease reap appends an event; `quartet_app` has SELECT and column-level INSERT on `(task_id, type, payload)` only, so `id` and `created_at` are stamped by the database, and no UPDATE, DELETE or TRUNCATE. The migrator and the superuser can still alter it. Decision logging planned (Phase 7) |
-| I | Secrets leak through logs, repr or URLs | Secrets typed as `SecretStr`; never logged or embedded in a logged URL | implemented (Phase 0) for settings; trace and log redaction planned (Phase 8) |
-| D | Runaway spend or loops | Per-step and per-task caps, `max_fix_rounds`, kill switch | planned (Phase 2, Phase 6) |
+| I | Secrets leak through logs, repr or URLs | Secrets typed as `SecretStr`; never logged or embedded in a logged URL | implemented (Phase 0) for settings; implemented (Phase 2) for the LLM layer's errors, logs and spans (exact known-secret replacement, then pattern redaction; the escaped-quote gap is in section 6); full trace and log redaction planned (Phase 8) |
+| D | Runaway spend or loops | Per-step and per-task caps, `max_fix_rounds`, kill switch | per-step caps (turns, tool calls, tokens, USD, wall clock): implemented (Phase 2); per-task cap, `max_fix_rounds` and kill switch: planned (Phase 6) |
 | E | Agent output triggers privileged actions | Artifacts are schema-validated; commits, pushes and PRs are orchestrator-only actions | planned (Phase 2, Phase 5, Phase 7) |
 
 ### 3.2 Sandbox (per role step)
@@ -114,21 +114,21 @@ Quartet's **own** repository CI is a different thing and is implemented (Phase 0
 
 | | Threat | Control | Status |
 |---|---|---|---|
-| I | Sensitive data sent to providers | Only the task spec, hand-overs and repo content in the worktree are sent; no host secrets or env reach the model context; prompt/response export to traces off by default | planned (Phase 2, Phase 3, Phase 8) |
+| I | Sensitive data sent to providers | Only the task spec, hand-overs and repo content in the worktree are sent; no host secrets or env reach the model context; prompt/response export to traces off by default | provider data handling implemented (Phase 2): OpenAI `store=false`, and no prompt or response content in span attributes (tested); no content export option exists yet. Context selection (what is sent, no host secrets) planned (Phase 3); trace content export planned (Phase 8) |
 | T | Hostile output (including injected instructions) steers the system | Output treated as untrusted; strict schemas; capability limits; independent deterministic policy gate | planned (Phase 2, Phase 5) |
-| D | Provider outage or runaway cost | Hard budgets, circuit breakers, spend rate limit | planned (Phase 2, Phase 6) |
+| D | Provider outage or runaway cost | Hard budgets, circuit breakers, spend rate limit | implemented (Phase 2) for per-step budgets and bounded retries; circuit breakers and spend rate limit planned (Phase 6) |
 | I | Telemetry leaks to a remote endpoint | OTLP endpoint must be http(s) on loopback (`127.0.0.1`, `localhost`, `::1`) | implemented (Phase 0) |
 
 ## 4. OWASP Top 10 for LLM Applications (2025) mapping
 
 | ID | Risk | Quartet controls (PRD) | Delivered |
 |---|---|---|---|
-| LLM01 | Prompt Injection | Untrusted text only in delimited data blocks, never in system prompts (FR-2, §8.3); capability limits; reviewer checks the diff for injection artifacts (FR-19); red-team suite (Phase 10) | FR-2 storage caps: implemented (Phase 1); prompts and reviewer: Phase 2 and 5; sandbox capability limits: Phase 3; red-team: Phase 10 |
-| LLM02 | Sensitive Information Disclosure | No secrets in the sandbox or MCP server (FR-13, §8.4); redaction of logs and spans, prompt export off by default (FR-30); `gitleaks` and `semgrep` on diffs (FR-21); `SecretStr` settings | Settings and gitleaks in repo CI: Phase 0; sandbox: Phase 3; diff scanning: Phase 5; redaction: Phase 8 |
+| LLM01 | Prompt Injection | Untrusted text only in delimited data blocks, never in system prompts (FR-2, §8.3); capability limits; reviewer checks the diff for injection artifacts (FR-19); red-team suite (Phase 10) | FR-2 storage caps: implemented (Phase 1); untrusted-data delimiter wrapper with a per-step nonce: implemented (Phase 2); reviewer: Phase 5; sandbox capability limits: Phase 3; red-team: Phase 10 |
+| LLM02 | Sensitive Information Disclosure | No secrets in the sandbox or MCP server (FR-13, §8.4); redaction of logs and spans, prompt export off by default (FR-30); `gitleaks` and `semgrep` on diffs (FR-21); `SecretStr` settings | Settings and gitleaks in repo CI: Phase 0; redaction of the LLM layer: implemented (Phase 2); sandbox: Phase 3; diff scanning: Phase 5; full redaction: Phase 8 |
 | LLM03 | Supply Chain | Digest-pinned images; SHA-pinned actions; `pip-audit`, Dependabot, `trivy`, `hadolint` (gates S3, S4, S6); no new dependencies without an explicit flag (FR-21); dependency manifests are blocked paths (§8.5) | Pinning and `pip-audit`: Phase 0; image scanning: Phase 3; dependency-change gate: Phase 5 |
-| LLM05 | Improper Output Handling | Strict Pydantic artifact schemas for both vendors, invalid output is a role failure (FR-15); tools run argument vectors without a shell (FR-14); DML parameterised; no `shell=True` rule | Repo rules: Phase 0; artifact schemas: implemented (Phase 1), provider wiring Phase 2; tool allowlists: Phase 3 |
+| LLM05 | Improper Output Handling | Strict Pydantic artifact schemas for both vendors, invalid output is a role failure (FR-15); tools run argument vectors without a shell (FR-14); DML parameterised; no `shell=True` rule | Repo rules: Phase 0; artifact schemas: implemented (Phase 1); artifact and tool-input validation: implemented (Phase 2); tool allowlists: Phase 3 |
 | LLM06 | Excessive Agency | No git-push, GitHub, network or shell tools (FR-14); orchestrator-only commits, pushes and PRs; blocked and flagged paths (§8.5); human merge with no bypass actors (FR-26) | Tool limits: Phase 3; policy gate: Phase 5; merge gate: Phase 7 |
-| LLM10 | Unbounded Consumption | Per-step and per-task caps, `max_fix_rounds = 3`, global spend limiter, kill switch (FR-16, §8.7); sandbox resource limits | Provider budgets: Phase 2; sandbox limits: Phase 3; limiter and kill switch: Phase 6 |
+| LLM10 | Unbounded Consumption | Per-step and per-task caps, `max_fix_rounds = 3`, global spend limiter, kill switch (FR-16, §8.7); sandbox resource limits | Per-step provider budgets: implemented (Phase 2); sandbox limits: Phase 3; per-task limiter and kill switch: Phase 6 |
 
 LLM04 (Data and Model Poisoning), LLM07 (System Prompt Leakage), LLM08 (Vector and Embedding Weaknesses) and LLM09 (Misinformation) are not separately mapped at v0. Quartet fine-tunes no model, uses no vector store, and keeps no secrets in prompts (system prompts are configuration, not secrets). Misinformation is handled through tests and review, with a human merge, rather than a dedicated control. These are to be revisited when the prompt and agent code exists.
 
@@ -194,3 +194,38 @@ Interface decisions recorded for Phase 6:
 - `events.task_id` is nullable, for task-less worker and kill-switch events.
 
 Residual risks: the app role can UPDATE `tasks` by design; queue operations rely on callers honouring the dedicated-session rule; fencing starts only at the reap; aggregate artifact size is unbounded until Phase 2; `uvx semgrep` and `zizmor` are version-pinned, not hash-locked; CI has still never run on GitHub; OTLP validator hardening is deferred to Phase 8 (R24). See section 5.
+
+### Phase 2: LLM provider layer
+
+What exists now (not future plans):
+
+- **Two adapters, one loop.** Anthropic uses the beta Messages client, streamed, with strict tools and structured output; `fallbacks` is sent only when a role sets it. OpenAI uses the Responses API over the raw event stream, with `store=False`, strict flat function tools and `text.format`. Both run through one loop (`llm/loop.py`), per [ADR-0004](adr/0004-provider-layer.md).
+- **Per-step budgets.** Caps on turns, tool calls, tokens, USD and wall clock, checked before every call. A step can exceed a cap by at most one call (P2-R6). Retries and tool runs share the step clock.
+- **Bounded retries.** SDK retries are off. Quartet retries 408, 409, 429, 5xx and connection errors, up to four attempts, with jittered backoff. It honours `retry-after` up to 60 s, and raises `BudgetExceeded` instead of sleeping past the step clock. Other 4xx statuses are not retried.
+- **Tool-input validation.** Each tool input is validated with `jsonschema` before the tool runs. An invalid or unknown call is answered with `is_error` and is not executed. Tool output is capped at 64 KiB and wrapped as untrusted data.
+- **Untrusted-data delimiters.** Issue text, artifacts, tool output and task text sit in `<untrusted_data_<nonce> kind="…">` blocks. The nonce is random and generated once per step. Any `<` that could open or close such a block is escaped.
+- **Artifact validation.** Output is validated against the Pydantic schema. A schema-invalid answer gets at most two repair turns, then `ArtifactInvalid`. A refusal raises `ModelRefused`, and partial refused content is discarded.
+- **Redaction of the LLM layer.** Log records are redacted when they are created, including rendered tracebacks and stack text. The hook is a process-wide record factory installed by `build_role_runner`, so it covers records emitted after a runner is built. Exception and span text is redacted before it is stored or raised. Known secrets (API keys and database passwords) are replaced exactly, in plain and percent-encoded form, and well-known shapes are then matched by pattern. Pattern redaction is defence in depth behind the exact replacement.
+- **Telemetry without content.** The `role:<name>`, `llm.call` and `tool.call` spans carry metadata only: model, token counts, cost, finish reason, and a sanitised tool name and call ID. Model-chosen identifiers are sanitised before they reach a span or a ledger row. The Anthropic SDK's own spans are set to metadata-only.
+- **Cost ledger.** Each call with known usage writes one `llm_calls` row and adds its cost to `tasks.spent_usd` in the same transaction. Tool calls write `tool_calls` rows with redacted, capped arguments. Prices come from the sourced `pricing.toml`. A model missing from that table is costed at the provider's highest rate and flagged as estimated, and the step then stops.
+- **Artifact size caps.** Each artifact is capped at 256 KiB and a task's artifacts at 4 MiB in total. This closes the Phase 1 residual "aggregate artifact size is unbounded".
+- **Smoke checks and cassettes, built but not run live.** `quartet llm smoke` has a dollar cap and one tool round trip per provider. The cassette recorder and replayer keep response headers on an allowlist and never store request headers, and both are unit-tested offline. No live call, cassette recording or `verify-models` run has happened yet (Task 15 gate).
+
+New assets: the provider API keys, held in memory in the SDK clients and in the redactor's set of known secrets; the recorded cassettes, which hold synthetic prompts only and none are committed yet; and the `llm_calls` and `tool_calls` rows.
+
+New boundary: orchestrator to vendor APIs, over TLS. Quartet sets no base URL, so each SDK's default https endpoint is used. Each SDK also reads its own base-URL environment variable if one is set, and Quartet does not validate it.
+
+Residual risks:
+
+- **Prompt injection is reduced, not prevented.** Delimiters and redaction reduce it. The controls are capability limits (Phase 3) and the human merge (Phase 7).
+- **Budget overshoot.** A step can exceed a cap by at most one call (P2-R6).
+- **Cost over-estimate.** Cost is over-estimated for calls a fallback served, because every fallback attempt is billed (P2-R5). Eval configurations keep fallback off.
+- **Vendor retention.** OpenAI keeps abuse-monitoring logs for up to 30 days even with `store=false`. Anthropic retains data under its own policy.
+- **No content export.** Opt-in trace content export is not built (Phase 8).
+- **SDK spans.** Native SDK spans depend on the pinned SDK majors. Quartet configures no OpenAI SDK telemetry, and no test covers any spans that SDK may emit.
+- **Unrecorded billed calls.** The ledger has rows only for calls with known usage. Two cases are billed by the vendor but not recorded: a call cut off by the step clock, and a retryable in-band OpenAI `failed` response that a retry then replaced.
+- **Escaped-quote redaction gap (parked).** Pattern redaction is defence in depth. A few escaped-quote shapes can still leak through it. Examples are `password=ab\"cd ef` in an unquoted value, and a JSON-embedded credential such as `{"error": "{\"password\": \"…\"}"}`. Exact known-secret replacement covers configured keys and passwords. Structured redaction is Phase 8.
+- **Cassettes.** Committed cassettes contain synthetic prompts only (policy). Credential scrubbing does not cover content, so a future recording with real content needs its own review.
+- **SDK debug logging.** Quartet sets no SDK log level. If someone enables DEBUG on a third-party SDK logger, request content, including prompts, can reach the logs. Logging configuration is Phase 8.
+- **Retries.** At most four attempts, bounded by the step clock.
+- **Unverified live behaviour.** Live cache behaviour, the model catalog's limits and fallback lists, and the OpenAI SDK against the live API are unproven until the Task 15 gate. Prices are a dated snapshot in `pricing.toml`, which Task 15 re-verifies.
