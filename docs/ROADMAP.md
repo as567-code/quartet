@@ -114,7 +114,7 @@ Implements [PRD.md](PRD.md) v0.3. There are 11 phases, each one a PR. Every phas
 - [ ] `src/quartet/llm/pricing.toml` (P2-R7): every price with its **source URL and date**. `gpt-6.1-sol` is verified on OpenAI's pricing page, and PRD §7.4 is re-computed from it. Plus `telemetry/cost_ledger.py`.
 - [ ] `llm/budget.py`: turn, token, USD and wall-clock caps per role step, checked **before** each call.
 - [ ] Retry policy: a typed-exception chain. 429, 5xx and connection errors get jittered backoff with a cap. 400, 401 and 404 never retry.
-- [ ] `llm/fake.py`: `FakeProvider` for tests. Cassettes (`llm/cassette.py`) record HTTP exchanges with response headers allow-listed and request headers never stored, and replay them offline. No cassette is committed yet: The Phase 2 live-verification gate records them, with synthetic prompts only.
+- [ ] `llm/fake.py`: `FakeProvider` for tests. Cassettes (`llm/cassette.py`) record HTTP exchanges with response headers allow-listed and request headers never stored, and replay them offline. No cassette is committed yet: the Phase 2 live-verification gate records them, with synthetic prompts only.
 - [ ] `src/quartet/llm/models.toml` (P2-R7), holding model IDs, context windows and output limits from the vendor docs (`verified_via = "docs"`). Live verification (Anthropic Models API, OpenAI `GET /v1/models`) is `quartet llm verify-models`, planned for the Phase 2 live-verification gate.
 - [ ] `quartet llm smoke`: each provider must return a valid instance of **every** artifact schema (proving both accept `const` from `Literal[1]`), plus one tool round trip per provider. The run has a dollar cap (`--max-usd`, default 1.00). Live results are pending the Phase 2 live-verification gate.
 
