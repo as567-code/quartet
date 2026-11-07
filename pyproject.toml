@@ -40,6 +40,7 @@ dev = [
     "pre-commit>=4.7.0",
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
+    "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
     "ruff>=0.17.4",
     "time-machine>=3.6.0",

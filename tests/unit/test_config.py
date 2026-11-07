@@ -196,3 +196,17 @@ def test_home_is_tilde_expanded(monkeypatch, tmp_path):
     monkeypatch.setenv("QUARTET_HOME", "~/x")
     assert load_settings().home == Path.home() / "x"
     assert Path.home() == tmp_path
+
+
+def test_migrator_db_url_defaults_to_none_and_is_validated(monkeypatch):
+    monkeypatch.setenv("QUARTET_DATABASE_URL", DB)
+    assert load_settings().migrator_database_url is None
+    good = "postgresql+psycopg://quartet_migrator:hunter2@127.0.0.1:5432/quartet"
+    monkeypatch.setenv("QUARTET_MIGRATOR_DATABASE_URL", good)
+    s = load_settings()
+    assert s.migrator_database_url is not None
+    assert s.migrator_database_url.get_secret_value() == good and "hunter2" not in repr(s)
+    monkeypatch.setenv("QUARTET_MIGRATOR_DATABASE_URL", good + "?passfile=x")
+    with pytest.raises(InvalidSettings) as ei:
+        load_settings()
+    assert "QUARTET_MIGRATOR_DATABASE_URL" in str(ei.value) and "hunter2" not in str(ei.value)

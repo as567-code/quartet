@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     admin_database_url: SecretStr | None = Field(
         default=None, validation_alias="QUARTET_ADMIN_DATABASE_URL"
     )
+    # Alembic only (ruling R31a): migrations run as quartet_migrator, never with database_url.
+    migrator_database_url: SecretStr | None = Field(
+        default=None, validation_alias="QUARTET_MIGRATOR_DATABASE_URL"
+    )
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     home: Path = Field(
@@ -83,7 +87,7 @@ class Settings(BaseSettings):
     )
     otlp_endpoint: str = "http://127.0.0.1:4318"
 
-    @field_validator("database_url", "admin_database_url")
+    @field_validator("database_url", "admin_database_url", "migrator_database_url")
     @classmethod
     def _validate_db_url(cls, value: SecretStr | None) -> SecretStr | None:
         return _check_db_url(value)

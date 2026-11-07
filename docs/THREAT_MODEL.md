@@ -1,8 +1,8 @@
 # Quartet Threat Model
 
-Status: v0 (Phase 0). Source of the security design: [PRD.md](PRD.md) §8 and §11. Every phase updates this file (gate S5, see [ROADMAP.md](ROADMAP.md)).
+Status: v1 (Phase 1). Source of the security design: [PRD.md](PRD.md) §8 and §11. Every phase updates this file (gate S5, see [ROADMAP.md](ROADMAP.md)).
 
-**Reading the controls.** Each control is labelled **implemented (Phase 0)** or **planned (Phase N)**. A planned control does not exist yet and must not be relied on. At the end of Phase 0 the repository contains the CLI skeleton, hardened configuration loading, a loopback-only compose stack, and CI security gates. It contains no orchestrator, sandbox, MCP server, agents or GitHub integration.
+**Reading the controls.** Each control is labelled **implemented (Phase 0)**, **implemented (Phase 1)** or **planned (Phase N)**. A planned control does not exist yet and must not be relied on. At the end of Phase 1 the repository contains the CLI skeleton, hardened configuration loading, a loopback-only compose stack, CI security gates, and the state store: the schema and its grants, the compare-and-set state machine, the lease queue and the repository helpers. It contains no orchestrator loop, worker processes, sandbox, MCP server, agents or GitHub integration.
 
 ## 1. Assets
 
@@ -14,12 +14,12 @@ Status: v0 (Phase 0). Source of the security design: [PRD.md](PRD.md) §8 and §
 | Target-repo integrity: default branch, CI, dependencies | Agent-authored code must not reach the default branch without a human. |
 | Target-repo CI credentials | Agent-authored code may run in CI, so CI must hold nothing worth stealing. |
 | Hidden-test repository | Leaking it would invalidate evaluation results. |
-| PostgreSQL database | Queue, state, leases and the audit log. |
+| PostgreSQL database (task DB) | Queue, state, leases, hand-overs, artifacts and the audit log. It stores untrusted issue text at rest (`tasks.title`, `tasks.body_untrusted`, `tasks.external_ref`). |
 | Budget | Unbounded model spend is an anti-goal. |
 
 ## 2. Trust boundaries
 
-Target architecture (PRD §8.2). Only the Postgres, configuration and CI parts exist in Phase 0; the sandbox, orchestrator logic and GitHub flow are planned.
+Target architecture (PRD §8.2). Only the Postgres (schema, state machine, lease queue), configuration and CI parts exist at the end of Phase 1; the sandbox, orchestrator loop and GitHub flow are planned.
 
 ```
  UNTRUSTED: issue text · repo contents · MCP tool output · LLM output · test output
@@ -48,11 +48,12 @@ S = Spoofing, T = Tampering, R = Repudiation, I = Information disclosure, D = De
 
 | | Threat | Control | Status |
 |---|---|---|---|
-| S | A process impersonates a worker and claims tasks | Workers authenticate to Postgres as `quartet_app`; lease ownership checks | login role exists (Phase 0); no workers exist yet; claims and lease ownership planned (Phase 1, Phase 6) |
-| T | Illegal state transition or lost update | Compare-and-set transitions against a static table | planned (Phase 1) |
+| S | A process impersonates a worker and claims tasks | Workers authenticate to Postgres as `quartet_app`; lease ownership checks | login role (Phase 0); `SKIP LOCKED` claim and owner-checked heartbeat and release implemented (Phase 1). `worker_id` is a caller-chosen label, not an authenticated identity: any holder of the `quartet_app` password can act as any worker. Worker processes planned (Phase 6) |
+| T | Illegal state transition or lost update | Compare-and-set on state and version against a static edge table; entering `NEEDS_HUMAN` records `resume_state` and leaving it (other than to `CLOSED`) is allowed only to that state | implemented (Phase 1) |
 | T | Hostile `.env` or env-file injects settings | Env file is never read from the cwd; explicit `QUARTET_ENV_FILE` or `~/.quartet/.env`; must be a regular file owned by the user and not group/world-writable | implemented (Phase 0) |
 | T | Hostile DB URL redirects the connection or smuggles libpq options | URL parsed with libpq's own parser; scheme and query keys allowlisted (`sslmode`, `connect_timeout`, `application_name`); `passfile`, `service`, `options` and similar rejected | implemented (Phase 0) |
-| R | An action cannot be attributed | Immutable `events` table; decision logging (`quartet intervene`) | planned (Phase 1, Phase 7) |
+| T | A worker whose lease expired keeps acting on its task (split brain) | Reaping an expired lease bumps `version`, the compare-and-set token, so the previous holder's transitions fail; heartbeat refuses an expired lease; `claim()` reaps before claiming | implemented (Phase 1). Fencing starts at the reap: a holder whose lease has expired but not yet been reaped can still transition until the next `claim()` or `reap_expired()` |
+| R | An action cannot be attributed | Append-only `events` table; decision logging (`quartet intervene`) | append-only `events` implemented (Phase 1): every `transition()`, `create_task()` and lease reap appends an event; `quartet_app` has SELECT and column-level INSERT on `(task_id, type, payload)` only, so `id` and `created_at` are stamped by the database, and no UPDATE, DELETE or TRUNCATE. The migrator and the superuser can still alter it. Decision logging planned (Phase 7) |
 | I | Secrets leak through logs, repr or URLs | Secrets typed as `SecretStr`; never logged or embedded in a logged URL | implemented (Phase 0) for settings; trace and log redaction planned (Phase 8) |
 | D | Runaway spend or loops | Per-step and per-task caps, `max_fix_rounds`, kill switch | planned (Phase 2, Phase 6) |
 | E | Agent output triggers privileged actions | Artifacts are schema-validated; commits, pushes and PRs are orchestrator-only actions | planned (Phase 2, Phase 5, Phase 7) |
@@ -84,10 +85,11 @@ No sandbox exists in Phase 0.
 | | Threat | Control | Status |
 |---|---|---|---|
 | S | Unauthenticated or remote access to the database | Compose binds `127.0.0.1` only; passwords are supplied by the owner in the git-ignored `.env` (they were generated randomly when this environment was set up, but the repo contains no generator and no strength check; strength is the owner's responsibility) | implemented (Phase 0) |
-| T | Application role alters the schema or audit log | Role split: `quartet_migrator` owns the database, `quartet_app` is a separate login role; passwords passed through psql variables, not interpolated into SQL text | role split implemented (Phase 0); `quartet_app` currently has no table grants at all; DML-only grants and no UPDATE/DELETE/TRUNCATE on `events`: planned (Phase 1) |
-| T | SQL injection | Bind parameters for DML; DDL composed with `psycopg.sql.SQL`/`Identifier`/`Literal`; semgrep repo rules reject f-string SQL | rules and CI gate implemented (Phase 0); queries themselves arrive in Phase 1 |
+| T | Application role alters the schema or audit log | Role split: `quartet_migrator` owns the database, `quartet_app` is a separate login role; passwords passed through psql variables, not interpolated into SQL text; DML-only grants | role split implemented (Phase 0). Implemented (Phase 1): `quartet_app` has SELECT/INSERT/UPDATE/DELETE on the tables and no CREATE on the schema; `events` is append-only and DB-stamped (see 3.1); `alembic_version` is read-only; migrations run as `quartet_migrator` through `QUARTET_MIGRATOR_DATABASE_URL` and never fall back to the app URL. Default privileges extend DML to every future migrator-created table, so a new append-only table must REVOKE explicitly (a test pins the expected set) |
+| T | SQL injection | Bind parameters for DML; DDL composed with `psycopg.sql.SQL`/`Identifier`/`Literal`; semgrep repo rules reject f-string SQL | rules and CI gate implemented (Phase 0); every queue, transition and repository statement uses bind parameters, implemented (Phase 1) |
 | I | Image or supply-chain compromise of the database image | Image pinned by `@sha256:` digest | implemented (Phase 0) |
-| D | Lease or claim starvation | Database `now()` for expiry; reaper | planned (Phase 1, Phase 6) |
+| D | Lease or claim starvation | Database `now()` for expiry; reaper | implemented (Phase 1): lease arithmetic uses the database clock only; `claim()` reaps expired leases itself, so recovery does not depend on a reaper loop; a reap bumps `attempt` only for runnable states and logs `lease_reaped`. Worker heartbeat scheduling planned (Phase 6) |
+| T/D | Untrusted task text or event payloads corrupt or bloat the store | UTF-8 byte caps: `title` 512, `body_untrusted` 65,536, `external_ref` 512; NUL characters stripped; text that cannot be encoded as UTF-8 (lone surrogates) rejected; error messages never echo content; event payloads written by `append_event()` and `transition()` capped at 65,536 bytes of compact JSON | implemented (Phase 1): checked in Python before any write, with DB CHECK constraints on `title` and `body_untrusted` as defence in depth (`external_ref` is capped in Python only). Aggregate artifact size is unbounded until Phase 2 |
 
 ### 3.5 GitHub App
 
@@ -121,10 +123,10 @@ Quartet's **own** repository CI is a different thing and is implemented (Phase 0
 
 | ID | Risk | Quartet controls (PRD) | Delivered |
 |---|---|---|---|
-| LLM01 | Prompt Injection | Untrusted text only in delimited data blocks, never in system prompts (FR-2, §8.3); capability limits; reviewer checks the diff for injection artifacts (FR-19); red-team suite (Phase 10) | FR-2 storage caps: Phase 1; prompts and reviewer: Phase 2 and 5; sandbox capability limits: Phase 3; red-team: Phase 10 |
+| LLM01 | Prompt Injection | Untrusted text only in delimited data blocks, never in system prompts (FR-2, §8.3); capability limits; reviewer checks the diff for injection artifacts (FR-19); red-team suite (Phase 10) | FR-2 storage caps: implemented (Phase 1); prompts and reviewer: Phase 2 and 5; sandbox capability limits: Phase 3; red-team: Phase 10 |
 | LLM02 | Sensitive Information Disclosure | No secrets in the sandbox or MCP server (FR-13, §8.4); redaction of logs and spans, prompt export off by default (FR-30); `gitleaks` and `semgrep` on diffs (FR-21); `SecretStr` settings | Settings and gitleaks in repo CI: Phase 0; sandbox: Phase 3; diff scanning: Phase 5; redaction: Phase 8 |
 | LLM03 | Supply Chain | Digest-pinned images; SHA-pinned actions; `pip-audit`, Dependabot, `trivy`, `hadolint` (gates S3, S4, S6); no new dependencies without an explicit flag (FR-21); dependency manifests are blocked paths (§8.5) | Pinning and `pip-audit`: Phase 0; image scanning: Phase 3; dependency-change gate: Phase 5 |
-| LLM05 | Improper Output Handling | Strict Pydantic artifact schemas for both vendors, invalid output is a role failure (FR-15); tools run argument vectors without a shell (FR-14); DML parameterised; no `shell=True` rule | Repo rules: Phase 0; schemas: Phase 1 and 2; tool allowlists: Phase 3 |
+| LLM05 | Improper Output Handling | Strict Pydantic artifact schemas for both vendors, invalid output is a role failure (FR-15); tools run argument vectors without a shell (FR-14); DML parameterised; no `shell=True` rule | Repo rules: Phase 0; artifact schemas: implemented (Phase 1), provider wiring Phase 2; tool allowlists: Phase 3 |
 | LLM06 | Excessive Agency | No git-push, GitHub, network or shell tools (FR-14); orchestrator-only commits, pushes and PRs; blocked and flagged paths (§8.5); human merge with no bypass actors (FR-26) | Tool limits: Phase 3; policy gate: Phase 5; merge gate: Phase 7 |
 | LLM10 | Unbounded Consumption | Per-step and per-task caps, `max_fix_rounds = 3`, global spend limiter, kill switch (FR-16, §8.7); sandbox resource limits | Provider budgets: Phase 2; sandbox limits: Phase 3; limiter and kill switch: Phase 6 |
 
@@ -132,9 +134,9 @@ LLM04 (Data and Model Poisoning), LLM07 (System Prompt Leakage), LLM08 (Vector a
 
 ## 5. Residual risks
 
-Stated as they stand at the end of Phase 0:
+Stated as they stand at the end of Phase 1:
 
-- **CI has never run on GitHub.** The workflows are statically checked (`actionlint`, `zizmor`) and locally tested, but their behaviour on GitHub-hosted runners, including SHA pins and checksum verification, is unproven until the first push.
+- **CI has still never run on GitHub.** The workflows are statically checked (`actionlint`, `zizmor`) and locally tested, but their behaviour on GitHub-hosted runners, including SHA pins and checksum verification, is unproven until the first push.
 - **macOS external-volume ownership is disabled.** The repository lives on an external volume where file ownership is disabled, so the env-file owner check (uid equals current user) is effectively vacuous there. The permission-bit check still applies. On a normal macOS or Linux volume the ownership check is meaningful.
 - **Local-dev passwords live in `.env`.** They are owner-supplied (generated randomly at setup, but the repo has no generator and no strength check). The file is git-ignored, so `gitleaks git` (which scans commits) does not scan it; it only guards against the file being committed. Anyone who can read the file can use the local database. The database is bound to loopback only.
 - **Makefile selects the repo's `.env`.** Config never reads a `.env` implicitly, but the Makefile sets `QUARTET_ENV_FILE` to the checkout's own `.env`, so `make` targets must not be run from an untrusted checkout.
@@ -144,6 +146,12 @@ Stated as they stand at the end of Phase 0:
 - **Most of the security model is not built.** The sandbox, MCP server, policy gate, GitHub integration, budgets and red-team suite are planned. Until they exist, no claim in the PRD about agent confinement is a property of the running system.
 - **Prompt injection cannot be fully prevented.** Mitigation relies on capability limits (planned) and a human merge, not on prompting.
 - **Docker on macOS runs in a VM.** UID and mount behaviour differ from Linux CI; sandbox tests must run in both (Phase 3).
+- **The app role can UPDATE `tasks`.** This is by design (the state machine and the queue run as `quartet_app`), but it means a leaked app credential can rewrite state, version, leases or budgets directly, bypassing the transition table, and such writes produce no event. Only `events` and `alembic_version` are protected from the app role.
+- **Queue session discipline is partly on the caller.** Queue functions refuse a session that already has an open transaction and own their own transaction, but keeping queue operations and `transition()` on separate sessions is a calling convention until the Phase 6 worker loop exists.
+- **Fencing starts at the reap.** A worker whose lease has expired but not yet been reaped can still complete a transition; it is fenced once any `claim()` or `reap_expired()` runs.
+- **Aggregate artifact size is unbounded** until Phase 2 adds a total-bytes cap per task.
+- **`uvx semgrep` and `uvx zizmor` are version-pinned, not hash-locked.** A compromised release under the same version on PyPI would run in CI and locally.
+- **OTLP endpoint validation is minimal.** Hardening of the validator is deferred to Phase 8 (ruling R24).
 
 ## 6. Threat delta log
 
@@ -165,3 +173,24 @@ What exists now (not future plans):
 New assets: the local Postgres instance and its `.env`. New boundaries: the process-to-env-file and process-to-database edges, and the repo-to-CI edge. Not yet present: sandbox, MCP server, agents, GitHub App, policy gate.
 
 Residual risks: see section 5, in particular that CI has never run on GitHub, that the env-file ownership check is vacuous on this volume, and that local-dev passwords sit in `.env`.
+
+### Phase 1: State store
+
+What exists now (not future plans):
+
+- **New asset: the task DB.** Postgres now holds tasks, their state and leases, artifacts, hand-overs and the audit log, including untrusted issue text at rest (`title`, `body_untrusted`, `external_ref`).
+- **Compare-and-set state machine.** Every transition is a compare-and-set on state and version against a static edge table; `resume_state` is recorded on entering `NEEDS_HUMAN` and enforced on leaving it.
+- **Append-only, DB-stamped audit log.** `quartet_app` has SELECT and column-level INSERT on `events (task_id, type, payload)` only: `id` and `created_at` always come from the database, and UPDATE, DELETE and TRUNCATE are revoked. Event payloads written by the application (`append_event()`, `transition()`) are capped at 65,536 bytes of compact JSON; the SQL-written `lease_reaped` event carries only the previous `lease_owner` and the new `attempt`.
+- **Least-privilege grants.** `quartet_app` has DML only (no CREATE on the schema); `alembic_version` is read-only for it; migrations run as `quartet_migrator` through `QUARTET_MIGRATOR_DATABASE_URL`, with no fallback to the application URL. A test pins the set of tables the app role cannot UPDATE or DELETE, and the migration template reminds authors that default privileges grant DML on new tables.
+- **DB-clock leases with fencing on reap.** Claims use `FOR UPDATE SKIP LOCKED` and the database clock. `claim()` reaps expired leases first (so recovery never waits for a reaper loop); a reap bumps `version`, bumps `attempt` only for runnable states, and logs a `lease_reaped` event with the previous owner. Heartbeat refuses an expired lease. Queue functions require a dedicated session with no open transaction and roll back on any error.
+- **Untrusted-input handling.** UTF-8 byte caps (title 512, body 65,536, external_ref 512), NUL stripping, rejection of lone surrogates, error messages that never echo content, `source` validated against its allowed values before any write; DB CHECK constraints on title and body length as defence in depth.
+
+New boundaries: the orchestrator-to-database edge now carries untrusted text and is split by role (app versus migrator).
+
+Interface decisions recorded for Phase 6:
+
+- `ClaimedTask.version` is the fencing token: workers pass it to `transition()` as `expected_version`, and a reap invalidates it.
+- `transition()` stays lease-agnostic: lease-less edges (`AWAITING_HUMAN -> MERGED`, CLI actions) use the same function; fencing comes from the version bump, not from a lease check.
+- `events.task_id` is nullable, for task-less worker and kill-switch events.
+
+Residual risks: the app role can UPDATE `tasks` by design; queue operations rely on callers honouring the dedicated-session rule; fencing starts only at the reap; aggregate artifact size is unbounded until Phase 2; `uvx semgrep` and `zizmor` are version-pinned, not hash-locked; CI has still never run on GitHub; OTLP validator hardening is deferred to Phase 8 (R24). See section 5.
