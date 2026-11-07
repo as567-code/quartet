@@ -13,6 +13,7 @@ from quartet.llm.base import (
     NULL_RECORDER,
     LLMError,
     Provider,
+    ProviderError,
     RoleConfig,
     RoleInput,
     RoleRunner,
@@ -92,6 +93,13 @@ def _config(provider: Provider, output_model: type[Any], limits: StepLimits) -> 
     )
 
 
+def _detail(err: LLMError | ValueError) -> str:
+    """Content-free text: a provider error shows class, status and code, never vendor text."""
+    if isinstance(err, ProviderError):
+        return err.summary
+    return f"{type(err).__name__}: {err}"
+
+
 async def _check(
     runner: RoleRunner,
     provider: Provider,
@@ -111,7 +119,7 @@ async def _check(
         )
     except (LLMError, ValueError) as err:
         cost = err.totals.cost_usd if isinstance(err, LLMError) and err.totals else Decimal(0)
-        return SmokeResult(provider, name, False, cost, f"{type(err).__name__}: {err}")
+        return SmokeResult(provider, name, False, cost, _detail(err))
     cost = result.totals.cost_usd
     if toolbox is not None:
         goal = result.artifact.goal if isinstance(result.artifact, ContextDigest) else None

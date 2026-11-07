@@ -100,11 +100,11 @@ def redactor_from_settings(settings: Settings) -> Redactor:
 
 
 def redact_value(value: Any, redactor: Redactor) -> Any:
-    """Redact every string inside ``value``, recursing through dicts and lists."""
+    """Redact every string inside ``value`` (dict keys too), recursing through dicts and lists."""
     if isinstance(value, str):
         return redactor.redact(value)
     if isinstance(value, dict):
-        return {k: redact_value(v, redactor) for k, v in value.items()}
+        return {redact_value(k, redactor): redact_value(v, redactor) for k, v in value.items()}
     if isinstance(value, list):
         return [redact_value(v, redactor) for v in value]
     return value

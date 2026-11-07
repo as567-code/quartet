@@ -17,6 +17,7 @@ from quartet.llm.catalog import ModelCatalog
 from quartet.llm.openai_runner import make_openai_client
 from quartet.llm.runner import MissingApiKey, build_role_runner
 from quartet.llm.smoke import run_smoke
+from quartet.telemetry.redaction import install_log_redaction, redactor_from_settings
 
 llm_app = typer.Typer(help="Provider checks (these spend real money).", no_args_is_help=True)
 
@@ -33,10 +34,12 @@ def _providers(choice: ProviderChoice) -> list[Provider]:
 
 def _load() -> Settings:
     try:
-        return load_settings()
+        settings = load_settings()
     except (InsecureEnvFile, InvalidSettings) as exc:
         typer.echo(f"✗ settings: {exc}")
         raise typer.Exit(code=1) from None
+    install_log_redaction(redactor_from_settings(settings))
+    return settings
 
 
 def _make_clients(

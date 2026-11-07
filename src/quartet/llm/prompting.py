@@ -2,7 +2,8 @@
 
 Every byte a role sees from users, repositories or tools reaches the model inside a
 ``<untrusted_data_<nonce>>`` block. The nonce is random per step and appears only in Quartet's
-own tags, so text from the data cannot forge a closing tag that the model would accept.
+own tags, so text from the data cannot forge a closing tag that the model would accept, as long
+as the data's author does not know the nonce. That reduces injection; it does not prevent it.
 Prompts are a pure function of their inputs, so the same inputs always give the same bytes
 (prompt caching).
 """

@@ -109,6 +109,19 @@ async def test_smoke_reports_a_failing_check_without_stopping():
     assert results[0].cost_usd > 0
 
 
+async def test_smoke_provider_error_detail_holds_no_vendor_text():
+    import anthropic
+
+    from quartet.llm.fake import FakeTurn
+    from tests.unit.llm._errors import status_error
+
+    err = status_error(anthropic.BadRequestError, 400, message="echo: MARKER-request-text")
+    bad = runner(lambda: FakeProvider([FakeTurn(raises=err)]))
+    results = await run_smoke({Provider.ANTHROPIC: bad}, max_usd=Decimal("1"))
+    assert results[0].detail == "ProviderError (status 400, code None)"
+    assert all("MARKER" not in r.detail for r in results)
+
+
 async def test_smoke_tool_check_requires_the_echoed_goal():
     from quartet.llm.fake import FakeTurn
 

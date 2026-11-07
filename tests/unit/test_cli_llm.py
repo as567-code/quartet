@@ -16,6 +16,7 @@ from quartet.llm import cli as llm_cli
 from quartet.llm.anthropic_runner import make_anthropic_client
 from quartet.llm.base import Provider, RoleRunner
 from quartet.llm.openai_runner import make_openai_client
+from quartet.telemetry.redaction import Redactor
 from tests.unit.llm._records import scripted_runner
 
 KEY = "sk-ant-cli-secret-value"
@@ -113,6 +114,17 @@ def test_verify_models_openai_failure_never_echoes_the_key(monkeypatch):
     r = CliRunner().invoke(app, ["llm", "verify-models", "--provider", "openai"])
     assert r.exit_code == 1 and "✗ gpt-6.1-sol" in r.output and "404" in r.output
     assert KEY not in r.output and "Traceback" not in r.output
+
+
+def test_verify_models_installs_log_redaction(monkeypatch):
+    seen: list[Redactor] = []
+    monkeypatch.setattr(llm_cli, "install_log_redaction", seen.append)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "plain-configured-key-1234")
+    monkeypatch.setattr(llm_cli, "_make_clients", lambda *a, **k: _clients())
+    r = CliRunner().invoke(app, ["llm", "verify-models"])
+    assert r.exit_code == 0, r.output
+    (redactor,) = seen
+    assert "plain-configured-key-1234" not in redactor.redact("x plain-configured-key-1234")
 
 
 def _scripted(cost: str) -> Callable[..., dict[Provider, RoleRunner]]:

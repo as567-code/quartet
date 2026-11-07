@@ -71,6 +71,13 @@ def test_idempotent_and_recursive():
     assert redact_value({"n": 3}, r) == {"n": 3}
 
 
+def test_redact_value_redacts_dict_keys_too():
+    r = Redactor()
+    out = redact_value({FAKES[0]: {FAKES[1]: [1, "ok"]}}, r)
+    assert FAKES[0] not in str(out) and FAKES[1] not in str(out)
+    assert out == {REDACTED: {REDACTED: [1, "ok"]}}
+
+
 def test_redactor_from_settings_covers_keys_and_db_passwords():
     settings = Settings(
         _env_file=None,

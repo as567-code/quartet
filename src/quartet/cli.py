@@ -6,6 +6,7 @@ from quartet import __version__
 from quartet.config import InsecureEnvFile, InvalidSettings, load_settings
 from quartet.doctor import run_checks
 from quartet.llm.cli import llm_app
+from quartet.telemetry.redaction import install_log_redaction, redactor_from_settings
 
 app = typer.Typer(help="Quartet: a multi-agent coding orchestrator.", no_args_is_help=True)
 app.add_typer(llm_app, name="llm")
@@ -38,6 +39,7 @@ def doctor() -> None:
     except (InsecureEnvFile, InvalidSettings) as exc:
         typer.echo(f"✗ settings: {exc}")
         raise typer.Exit(code=1) from None
+    install_log_redaction(redactor_from_settings(settings))
     checks = run_checks(settings)
     for check in checks:
         typer.echo(f"{'✓' if check.ok else '✗'} {check.name}: {check.detail}")
