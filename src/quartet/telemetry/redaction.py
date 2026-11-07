@@ -13,17 +13,20 @@ from quartet.config import Settings, libpq_url
 REDACTED = "[REDACTED]"
 _MIN_SECRET_LENGTH = 8
 
+# Left edge of an sk- key: not mid-word, but still after an escaped newline or a %XX escape.
+_SK_LEFT = r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt])|(?<=%[0-9A-Fa-f]{2}))"
+
 # (compiled pattern, replacement); applied in this order after the exact secret values.
 PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{8,}"), REDACTED),
-    (re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}"), REDACTED),
+    (re.compile(_SK_LEFT + r"sk-ant-[A-Za-z0-9_\-]{8,}"), REDACTED),
+    (re.compile(_SK_LEFT + r"sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}"), REDACTED),
     (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), REDACTED),
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), REDACTED),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{8,}=*"), REDACTED),
     (
         re.compile(
             r"(?i)(?<![A-Za-z0-9])(x-api-key|api[_-]?key|authorization|password|passwd)"
-            r"([\"']?\s*[:=]\s*[\"']?)(?:[A-Za-z]+\s+)?[^\s\"',]+"
+            r"([\"']?\s*[:=]\s*[\"']?)(?:(?:basic|bearer|token|digest)\s+)?[^\s\"',]+"
         ),
         rf"\1\2{REDACTED}",
     ),

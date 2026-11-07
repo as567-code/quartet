@@ -169,3 +169,23 @@ def test_redacting_filter_survives_bad_format_string():
     record = logging.LogRecord("n", logging.INFO, __file__, 1, "n=%d", (FAKES[0],), None)
     assert RedactingFilter(Redactor()).filter(record)
     assert FAKES[0] not in record.getMessage() and REDACTED in record.getMessage()
+
+
+@pytest.mark.parametrize("prefix", ["\\n", "%3D", "_", "="])
+@pytest.mark.parametrize("key", [FAKES[0], FAKES[2]])
+def test_sk_keys_redacted_after_escapes(prefix, key):
+    out = Redactor().redact(f"x{prefix}{key}")
+    assert key not in out and REDACTED in out
+
+
+def test_sk_boundary_still_protects_words():
+    for text in ("task-3-redaction-and-tracing-helpers", "desk-0123456789abcdefghij"):
+        assert Redactor().redact(text) == text
+
+
+def test_alphabetic_values_do_not_swallow_following_text():
+    r = Redactor()
+    assert r.redact("password=secret host=db").endswith("host=db")
+    assert r.redact("api-key: mysecretvalue and more").endswith("and more")
+    assert "secret " not in r.redact("password=secret host=db")
+    assert "dXNlcjpz" not in r.redact("Authorization: Basic dXNlcjpz")
