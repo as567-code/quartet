@@ -6,6 +6,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from quartet.config import Settings, load_settings
+
 _CLEARED = (
     "QUARTET_DATABASE_URL",
     "QUARTET_ADMIN_DATABASE_URL",
@@ -53,3 +55,24 @@ def _span_exporter_session() -> InMemorySpanExporter:
 def span_exporter(_span_exporter_session: InMemorySpanExporter) -> InMemorySpanExporter:
     _span_exporter_session.clear()
     return _span_exporter_session
+
+
+def _settings_from_env_file(tmp_path: Path, *lines: str) -> Settings:
+    env_file = tmp_path / "quartet-test.env"
+    env_file.write_text(
+        "\n".join(["QUARTET_DATABASE_URL=postgresql://u:pw@127.0.0.1:5432/q", *lines]) + "\n"
+    )
+    env_file.chmod(0o600)
+    return load_settings(env_file)
+
+
+@pytest.fixture
+def settings_without_keys(tmp_path: Path) -> Settings:
+    return _settings_from_env_file(tmp_path)
+
+
+@pytest.fixture
+def settings_with_keys(tmp_path: Path) -> Settings:
+    return _settings_from_env_file(
+        tmp_path, "ANTHROPIC_API_KEY=sk-ant-unit-test-key", "OPENAI_API_KEY=sk-unit-test-key"
+    )

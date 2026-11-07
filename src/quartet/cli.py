@@ -5,8 +5,10 @@ import typer
 from quartet import __version__
 from quartet.config import InsecureEnvFile, InvalidSettings, load_settings
 from quartet.doctor import run_checks
+from quartet.llm.cli import llm_app
 
 app = typer.Typer(help="Quartet: a multi-agent coding orchestrator.", no_args_is_help=True)
+app.add_typer(llm_app, name="llm")
 
 
 def _version_callback(value: bool) -> None:
