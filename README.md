@@ -23,7 +23,7 @@ What goes in `.env`:
 - `QUARTET_DATABASE_URL`: the application role, e.g. `postgresql+psycopg://quartet_app:<app password>@127.0.0.1:5432/quartet`.
 - `QUARTET_MIGRATOR_DATABASE_URL`: the schema owner, used only by Alembic (`make migrate`), e.g. `postgresql+psycopg://quartet_migrator:<migrator password>@127.0.0.1:5432/quartet`. Migrations never fall back to the application URL.
 - `QUARTET_ADMIN_DATABASE_URL`: the `postgres` superuser on database `postgres`; the integration tests use it to create and drop throwaway `quartet_test_*` databases.
-- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`: optional until the provider phases.
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`: needed for `quartet llm smoke`, `pytest -m live` and real runs (and checked by `make doctor`); `make check` never uses them.
 
 Passwords containing URL-reserved characters must be percent-encoded inside the URLs.
 

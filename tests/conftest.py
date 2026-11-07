@@ -29,6 +29,7 @@ from quartet.config import (
     _resolve_env_file,
     libpq_url,
     load_settings,
+    selected_env_file,
 )
 from quartet.db.session import make_engine
 
@@ -116,6 +117,11 @@ def list_test_databases(admin_url: str) -> list[str]:
 
 
 @pytest.fixture(scope="session")
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.fixture(scope="session")
 def admin_url() -> str:
     url = os.environ.get("QUARTET_ADMIN_DATABASE_URL")
     if not url:
@@ -125,8 +131,9 @@ def admin_url() -> str:
             secret = load_settings().admin_database_url
         except InsecureEnvFile as exc:  # the message names the path only, never file contents
             insecure = str(exc)
-        except InvalidSettings:
-            pass
+        except InvalidSettings as exc:  # the message names fields only (P2-R10 / R38)
+            if selected_env_file() is not None:
+                insecure = str(exc)
         if insecure is not None:
             pytest.fail(insecure, pytrace=False)
         url = secret.get_secret_value() if secret else None
