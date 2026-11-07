@@ -5,7 +5,7 @@ import pytest
 
 from quartet.config import Settings
 from quartet.domain.artifacts import ARTIFACT_MODELS, ContextDigest, Plan
-from quartet.llm.base import EMPTY_TOOLBOX, Provider, ToolSpec
+from quartet.llm.base import EMPTY_TOOLBOX, NULL_RECORDER, Provider, ToolSpec
 from quartet.llm.fake import FakeProvider
 from quartet.llm.runner import MissingApiKey, ProviderRoleRunner, build_role_runner
 from quartet.llm.smoke import SMOKE_LIMITS, SMOKE_MODELS, EchoToolbox, run_smoke
@@ -91,8 +91,8 @@ async def test_smoke_covers_every_artifact_model_and_tool_check():
 
 
 async def test_smoke_stops_at_budget():
-    runners = {p: scripted_runner(p, cost_per_check=Decimal("0.30")) for p in Provider}
-    results = await run_smoke(runners, max_usd=Decimal("0.50"))
+    runners = {p: scripted_runner(p, cost_per_check=Decimal("0.20")) for p in Provider}
+    results = await run_smoke(runners, max_usd=Decimal("0.30"))
     assert [r.ok for r in results[:2]] == [True, True]
     rest = results[2:]
     assert rest and all(not r.ok for r in rest)
@@ -145,3 +145,18 @@ async def test_echo_toolbox_records_calls():
 def test_smoke_constants():
     assert SMOKE_LIMITS.max_usd == Decimal("0.25") and SMOKE_LIMITS.max_turns == 4
     assert SMOKE_MODELS == {Provider.ANTHROPIC: "claude-opus-5-5", Provider.OPENAI: "gpt-6.1-sol"}
+
+
+async def test_smoke_clamps_each_check_to_the_remaining_budget():
+    seen: list[Decimal] = []
+    inner = scripted_runner(Provider.ANTHROPIC, cost_per_check=Decimal("0.05"))
+
+    class Spy:
+        async def run(self, config, handover_input, tools, *, recorder=NULL_RECORDER):
+            seen.append(config.limits.max_usd)
+            return await inner.run(config, handover_input, tools, recorder=recorder)
+
+    results = await run_smoke({Provider.ANTHROPIC: Spy()}, max_usd=Decimal("0.10"))
+    assert seen == [Decimal("0.10"), Decimal("0.05")]
+    assert sum(r.cost_usd for r in results) == Decimal("0.10")
+    assert all(r.detail == "skipped: smoke budget reached" for r in results[2:])

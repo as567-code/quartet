@@ -2,7 +2,7 @@
 output work together in one request. These spend real money, so spending is capped."""
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any
 
@@ -78,7 +78,7 @@ class SmokeResult:
     detail: str
 
 
-def _config(provider: Provider, output_model: type[Any]) -> RoleConfig:
+def _config(provider: Provider, output_model: type[Any], limits: StepLimits) -> RoleConfig:
     return RoleConfig(
         role=Role.ORCHESTRATOR,
         provider=provider,
@@ -87,19 +87,24 @@ def _config(provider: Provider, output_model: type[Any]) -> RoleConfig:
         system_prompt=SYSTEM_PROMPT,
         output_model=output_model,
         max_output_tokens=8_000,
-        limits=SMOKE_LIMITS,
+        limits=limits,
         server_fallback=False,
     )
 
 
 async def _check(
-    runner: RoleRunner, provider: Provider, name: str, output_model: type[Any], tool_check: bool
+    runner: RoleRunner,
+    provider: Provider,
+    name: str,
+    output_model: type[Any],
+    tool_check: bool,
+    limits: StepLimits,
 ) -> SmokeResult:
     toolbox = EchoToolbox() if tool_check else None
     instructions = TOOL_INSTRUCTIONS if tool_check else SCHEMA_INSTRUCTIONS
     try:
         result = await runner.run(
-            _config(provider, output_model),
+            _config(provider, output_model, limits),
             RoleInput(instructions, (), TASK_TEXT),
             toolbox if toolbox is not None else EMPTY_TOOLBOX,
             recorder=NULL_RECORDER,
@@ -132,7 +137,8 @@ async def run_smoke(
             if spent >= max_usd:
                 results.append(SmokeResult(provider, name, False, Decimal(0), SKIPPED))
                 continue
-            result = await _check(runner, provider, name, output_model, tool_check)
+            limits = replace(SMOKE_LIMITS, max_usd=min(SMOKE_LIMITS.max_usd, max_usd - spent))
+            result = await _check(runner, provider, name, output_model, tool_check, limits)
             spent += result.cost_usd
             results.append(result)
     return results

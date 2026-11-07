@@ -4,7 +4,7 @@ explicit ``-m live`` shows intent to spend money), it does not skip it.
 """
 
 import os
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 import openai
@@ -17,10 +17,9 @@ from quartet.llm.base import Provider
 from quartet.llm.cassette import RecordingTransport, save_cassette
 from quartet.llm.runner import MissingApiKey, ProviderRoleRunner, build_role_runner
 from quartet.telemetry.redaction import redactor_from_settings
+from tests.live._types import RunnerFactory
 
 CASSETTE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "cassettes"
-
-RunnerFactory = Callable[[Provider], ProviderRoleRunner]
 
 
 def recording_enabled() -> bool:

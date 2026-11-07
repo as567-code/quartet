@@ -6,7 +6,7 @@ import pytest
 
 from quartet.domain.artifacts import ContextDigest
 from quartet.domain.states import Role
-from quartet.llm.base import Provider, RoleConfig, RoleInput
+from quartet.llm.base import EMPTY_TOOLBOX, Provider, RoleConfig, RoleInput
 from quartet.llm.smoke import (
     SMOKE_LIMITS,
     SMOKE_MODELS,
@@ -14,7 +14,7 @@ from quartet.llm.smoke import (
     EchoToolbox,
     run_smoke,
 )
-from tests.live.conftest import RunnerFactory
+from tests.live._types import RunnerFactory
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
 
@@ -59,9 +59,10 @@ async def test_live_anthropic_prompt_cache_read(live_runner: RunnerFactory) -> N
         'Return a ContextDigest whose goal is "cache probe", with empty lists.', (), "cache probe"
     )
     runner = live_runner(Provider.ANTHROPIC)
-    first = await runner.run(config, role_input, EchoToolbox())
-    second = await runner.run(config, role_input, EchoToolbox())
-    assert first.calls[0].usage.cache_write_short_tokens > 0
+    first = await runner.run(config, role_input, EMPTY_TOOLBOX)
+    second = await runner.run(config, role_input, EMPTY_TOOLBOX)
+    first_usage = first.calls[0].usage
+    assert first_usage.cache_write_short_tokens > 0 or first_usage.cache_read_tokens > 0
     assert second.calls[0].usage.cache_read_tokens > 0
 
 

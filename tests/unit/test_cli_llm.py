@@ -129,10 +129,10 @@ def test_smoke_cli_exit_codes(monkeypatch):
     assert r.output.count("✓") == checks and "✗" not in r.output
     assert f"total cost: ${Decimal('0.010000') * checks}" in r.output
 
-    monkeypatch.setattr(llm_cli, "_make_runners", _scripted("0.30"))
-    r = CliRunner().invoke(app, ["llm", "smoke", "--max-usd", "0.50"])
+    monkeypatch.setattr(llm_cli, "_make_runners", _scripted("0.20"))
+    r = CliRunner().invoke(app, ["llm", "smoke", "--max-usd", "0.30"])
     assert r.exit_code == 1
-    assert "skipped: smoke budget reached" in r.output and "total cost: $0.600000" in r.output
+    assert "skipped: smoke budget reached" in r.output and "total cost: $0.400000" in r.output
 
 
 def test_smoke_cli_single_provider(monkeypatch):
