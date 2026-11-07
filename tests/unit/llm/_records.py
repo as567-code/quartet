@@ -1,11 +1,28 @@
 """Shared builders for the llm tests; later tasks import and extend these."""
 
+import time
 from decimal import Decimal
 from typing import Any
 
 from quartet.domain.artifacts import Plan, PlanStep, PredictedFile
 from quartet.domain.states import Role
-from quartet.llm.base import CallRecord, Provider, RoleConfig, StepLimits, Usage
+from quartet.llm.base import (
+    EMPTY_TOOLBOX,
+    CallRecord,
+    Provider,
+    RoleConfig,
+    RoleInput,
+    RoleResult,
+    StepLimits,
+    Toolbox,
+    ToolOutcome,
+    Usage,
+)
+from quartet.llm.fake import FakeProvider, FakeTurn, Handler, ListRecorder
+from quartet.llm.loop import LoopDeps, run_step
+from quartet.llm.pricing import PricingTable
+from quartet.llm.retry import RetryPolicy
+from quartet.telemetry.redaction import Redactor
 
 
 def limits(**overrides: Any) -> StepLimits:
@@ -78,3 +95,41 @@ class FakeClock:
 
     def __call__(self) -> float:
         return self.t
+
+
+def ok(text: str) -> Handler:
+    async def handler(_args: dict[str, Any]) -> ToolOutcome:
+        return ToolOutcome(text, False)
+
+    return handler
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+_limits = limits
+
+
+async def step(
+    script: list[FakeTurn],
+    *,
+    toolbox: Toolbox = EMPTY_TOOLBOX,
+    limits: StepLimits | None = None,
+    recorder: ListRecorder | None = None,
+    task_text: str = "t",
+    real_clock: bool = False,
+) -> tuple[RoleResult, FakeProvider, ListRecorder]:
+    fake = FakeProvider(script)
+    rec = recorder if recorder is not None else ListRecorder()
+    deps = LoopDeps(
+        pricing=PricingTable.load(),
+        redactor=Redactor(),
+        retry_policy=RetryPolicy(),
+        clock=time.monotonic if real_clock else FakeClock(),
+        sleep=_no_sleep,
+        rand=lambda: 0.5,
+    )
+    config = cfg(limits=limits if limits is not None else _limits())
+    result = await run_step(fake, config, RoleInput("Plan it.", (), task_text), toolbox, rec, deps)
+    return result, fake, rec
