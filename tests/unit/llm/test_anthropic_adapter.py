@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from typing import Any, cast
 
+import anthropic
+import httpx2
 import pytest
 from pydantic import SecretStr
 
@@ -15,8 +17,10 @@ from quartet.llm.anthropic_runner import (
 )
 from quartet.llm.base import ProviderError, Usage
 from quartet.llm.loop import ProviderTurn, StopKind, ToolResult
+from quartet.llm.retry import classify
 from tests.unit.llm._records import cfg, plan_json
-from tests.unit.llm._sse import beta_message, text_message, tool_use_message
+from tests.unit.llm._sse import anthropic_sse, beta_message, text_message, tool_use_message
+from tests.unit.llm._streams import broken_response
 from tests.unit.llm.conftest import ECHO, PROMPT, READ_FILE, Capture, tool
 
 pytestmark = pytest.mark.anyio
@@ -256,6 +260,10 @@ def test_pause_turn_is_provider_error(reason):
         turn_from_message(msg, "claude-opus-5-5")
     assert info.value.retryable is False and info.value.turn is not None
     assert "!" not in str(info.value)
+    # The billed turn carries the sanitised reason too, never the raw vendor string.
+    billed = cast(ProviderTurn, info.value.turn)
+    assert "!" not in billed.stop_reason
+    assert billed.stop_reason == (reason if reason != "Not Valid!" else "<invalid>")
 
 
 async def test_sdk_spans_have_no_content_even_with_env_override(
@@ -294,3 +302,32 @@ async def test_begin_enforces_budget(capture):
 async def test_complete_requires_begin(capture):
     with pytest.raises(RuntimeError):
         await adapter_for(capture).complete(timeout=1)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (httpx2.ReadError("boom"), anthropic.APIConnectionError),
+        (httpx2.RemoteProtocolError("peer closed"), anthropic.APIConnectionError),
+        (httpx2.ReadTimeout("slow"), anthropic.APITimeoutError),
+    ],
+    ids=["read_error", "remote_protocol_error", "read_timeout"],
+)
+async def test_mid_stream_transport_error_becomes_a_retryable_sdk_error(capture, error, expected):
+    body = anthropic_sse(text_message(plan_json()))
+    adapter = adapter_for(capture, broken_response(body, error))
+    adapter.begin(cfg(), PROMPT, [])
+    with pytest.raises(anthropic.APIConnectionError) as info:
+        await adapter.complete(timeout=30)
+    assert type(info.value) is expected
+    assert info.value.__context__ is None
+    decision = classify(info.value)
+    assert decision is not None and decision.retryable
+    assert adapter._messages == [{"role": "user", "content": PROMPT.user}]  # nothing appended
+
+
+def test_transport_error_without_a_request_still_converts():
+    from quartet.llm.anthropic_runner import _sdk_transport_error
+
+    bare = _sdk_transport_error(httpx2.ReadError("boom"))
+    assert type(bare) is anthropic.APIConnectionError and bare.request.method == "POST"

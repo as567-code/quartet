@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from quartet.db.models import TASK_SOURCES, Artifact, Event, Handover, Repo, Task
+from quartet.db.sanitize import strip_nul
 from quartet.domain.artifacts import ARTIFACT_KINDS, ContextDigest
 from quartet.domain.events import check_event_payload
 from quartet.domain.states import Role, TaskState
@@ -52,7 +53,7 @@ class ArtifactTooLarge(ValueError):
 
 def _clean(field: str, value: str, limit: int) -> str:
     """NUL-strip, validate UTF-8 encodability, then cap by byte length."""
-    cleaned = value.replace("\x00", "")
+    cleaned = strip_nul(value)
     try:
         size = len(cleaned.encode("utf-8"))
     except UnicodeEncodeError:

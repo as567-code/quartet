@@ -1,4 +1,4 @@
-"""LLM call detail columns, money precision Numeric(14, 6), tool-call ids.
+"""LLM call detail columns (incl. cost_estimated), money precision Numeric(14, 6), tool-call ids.
 
 Revision ID: 0002
 Revises: 0001
@@ -40,6 +40,10 @@ def upgrade() -> None:
     op.add_column(
         "llm_calls",
         sa.Column("attempts", sa.Integer, nullable=False, server_default="1"),
+    )
+    op.add_column(
+        "llm_calls",
+        sa.Column("cost_estimated", sa.Boolean, nullable=False, server_default=sa.false()),
     )
     op.alter_column(
         "llm_calls",
@@ -110,6 +114,7 @@ def downgrade() -> None:
         existing_nullable=False,
         existing_server_default=sa.text("0"),
     )
+    op.drop_column("llm_calls", "cost_estimated")
     op.drop_column("llm_calls", "attempts")
     op.drop_column("llm_calls", "reasoning_tokens")
     op.drop_column("llm_calls", "request_id")

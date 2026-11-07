@@ -120,7 +120,7 @@ def turn_from_message(message: Any, requested_model: str) -> ProviderTurn:
             refusal_category=fields.get("refusal_category"),
             model=message.model,
             usage_parts=parts,
-            stop_reason=reason,
+            stop_reason=fields.get("stop_reason", reason),
             request_id=None,
         )
 
@@ -135,7 +135,9 @@ def turn_from_message(message: Any, requested_model: str) -> ProviderTurn:
         return turn(StopKind.TRUNCATED)
     shown = reason if _SAFE_REASON.fullmatch(reason) else "<invalid>"
     raise ProviderError(
-        f"unsupported stop_reason: {shown}", retryable=False, turn=turn(StopKind.TRUNCATED)
+        f"unsupported stop_reason: {shown}",
+        retryable=False,
+        turn=turn(StopKind.TRUNCATED, stop_reason=shown),
     )
 
 
@@ -183,11 +185,19 @@ class AnthropicAdapter(ProviderAdapter):
     async def complete(self, *, timeout: float) -> ProviderTurn:
         if self._config is None:
             raise RuntimeError("begin() must be called before complete()")
-        async with self._client.beta.messages.stream(
-            **self._request, messages=self._messages, timeout=timeout
-        ) as stream:
-            message = await stream.get_final_message()
-            request_id = stream.request_id
+        dropped: anthropic.APIConnectionError | None = None
+        try:
+            async with self._client.beta.messages.stream(
+                **self._request, messages=self._messages, timeout=timeout
+            ) as stream:
+                message = await stream.get_final_message()
+                request_id = stream.request_id
+        except httpx2.TransportError as exc:
+            # The SDK wraps send-time failures but not body reads while the SSE stream is
+            # consumed. Convert here, after the handler, so no raw error rides in __context__.
+            dropped = _sdk_transport_error(exc)
+        if dropped is not None:
+            raise dropped
         self._messages.append(
             {"role": "assistant", "content": [block.to_dict() for block in message.content]}
         )
@@ -212,6 +222,17 @@ class AnthropicAdapter(ProviderAdapter):
         blocks.append({"type": "text", "text": text})
         self._messages.append({"role": "user", "content": blocks})
         self._pending = []
+
+
+def _sdk_transport_error(exc: httpx2.TransportError) -> anthropic.APIConnectionError:
+    """The SDK error a send-time failure would have produced; no text of ``exc`` is kept."""
+    try:
+        request = exc.request
+    except RuntimeError:  # the transport did not attach the request
+        request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    if isinstance(exc, httpx2.TimeoutException):
+        return anthropic.APITimeoutError(request=request)
+    return anthropic.APIConnectionError(request=request)
 
 
 def _tool_result(result: ToolResult) -> dict[str, Any]:

@@ -204,6 +204,8 @@ class LlmCall(Base):
     reasoning_tokens: Mapped[int] = mapped_column(server_default="0")
     attempts: Mapped[int] = mapped_column(server_default="1")
     cost_usd: Mapped[Decimal] = mapped_column(sa.Numeric(14, 6), server_default="0")
+    # True when the model was unpriced and cost_usd is the ceiling price (an over-estimate).
+    cost_estimated: Mapped[bool] = mapped_column(server_default=sa.false())
     latency_ms: Mapped[int | None]
     stop_reason: Mapped[str | None]
     trace_id: Mapped[str | None]

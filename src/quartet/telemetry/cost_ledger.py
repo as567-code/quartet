@@ -1,21 +1,23 @@
 """Cost ledger: per-call rows in ``llm_calls``/``tool_calls`` and the task's running spend.
 
-Completeness (P2-R5/R6): a row exists for every call that completed or failed with a known
-usage. A call cut off by the step clock has unknown usage and no row; an in-band OpenAI
-``failed`` response that is retried and then succeeds records none of its own usage.
+Completeness (P2-R5/R6, FR-C1): a row exists for every call that completed or failed with a
+known usage, including each billed attempt that was then retried. Calls whose usage is unknown
+(step-clock cut-off, mid-stream error or transport drop) have no row.
 """
 
 import asyncio
+from collections.abc import Callable
 from decimal import Decimal
 from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import Engine
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from quartet.db.models import LlmCall, Task, ToolCall
 from quartet.db.session import session_scope
-from quartet.llm.base import CallRecord, StepRecorder, ToolCallRecord
+from quartet.llm.base import CallRecord, RecorderError, StepRecorder, ToolCallRecord
 
 
 class DbStepRecorder(StepRecorder):
@@ -27,10 +29,26 @@ class DbStepRecorder(StepRecorder):
         self._step_id = step_id
 
     async def llm_call(self, record: CallRecord) -> None:
-        await asyncio.to_thread(self._write_llm, record)
+        await self._write(self._write_llm, record)
 
     async def tool_call(self, record: ToolCallRecord) -> None:
-        await asyncio.to_thread(self._write_tool, record)
+        await self._write(self._write_tool, record)
+
+    @staticmethod
+    async def _write[R](write: Callable[[R], None], record: R) -> None:
+        """Run a write in a worker thread; a database error becomes a content-free one.
+
+        The driver's message quotes the row's parameters, so it is never allowed out.
+        """
+        failed = False
+        sqlstate: str | None = None
+        try:
+            await asyncio.to_thread(write, record)
+        except DBAPIError as exc:
+            failed = True
+            sqlstate = getattr(exc.orig, "sqlstate", None)
+        if failed:
+            raise RecorderError(f"ledger write failed (SQLSTATE {sqlstate})")
 
     def _write_llm(self, record: CallRecord) -> None:
         usage = record.usage
@@ -50,6 +68,7 @@ class DbStepRecorder(StepRecorder):
                     reasoning_tokens=usage.reasoning_tokens,
                     attempts=record.attempts,
                     cost_usd=record.cost_usd,
+                    cost_estimated=record.cost_estimated,
                     latency_ms=record.latency_ms,
                     stop_reason=record.stop_reason,
                     trace_id=record.trace_id,

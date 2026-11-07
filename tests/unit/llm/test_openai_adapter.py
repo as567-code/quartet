@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import httpx2
+import openai
 import pytest
 from openai.types.responses import Response
 from pydantic import SecretStr
@@ -24,25 +25,28 @@ from quartet.llm.fake import ListRecorder
 from quartet.llm.loop import LoopDeps, ProviderTurn, StopKind, ToolResult, run_step
 from quartet.llm.openai_runner import (
     OpenAIAdapter,
+    _arguments,
     make_openai_client,
     schema_format_name,
     turn_from_response,
     usage_from_openai,
 )
 from quartet.llm.pricing import PricingTable
-from quartet.llm.retry import RetryPolicy
+from quartet.llm.retry import RetryPolicy, classify
 from quartet.telemetry.redaction import Redactor
 from tests.unit.llm._records import FakeClock, cfg
 from tests.unit.llm._sse import (
     function_call_item,
     message_item,
     ns,
+    openai_sse,
     reasoning_item,
     refusal_part,
     resp,
     text_part,
     usage,
 )
+from tests.unit.llm._streams import broken_response
 from tests.unit.llm.conftest import ECHO, PROMPT, READ_FILE, Capture
 
 pytestmark = pytest.mark.anyio
@@ -427,3 +431,28 @@ async def test_loop_over_transport_truncated_function_call_then_valid(capture):
     assert result.repairs == 1 and len(recorder.llm) == 2
     outputs = [i for i in capture.bodies[1]["input"] if i.get("type") == "function_call_output"]
     assert [o["call_id"] for o in outputs] == ["c1"]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (httpx2.ReadError("boom"), openai.APIConnectionError),
+        (httpx2.ReadTimeout("slow"), openai.APITimeoutError),
+    ],
+    ids=["read_error", "read_timeout"],
+)
+async def test_mid_stream_transport_error_is_a_retryable_sdk_error(capture, error, expected):
+    adapter = adapter_for(capture, broken_response(openai_sse(final()), error))
+    adapter.begin(config(), PROMPT, [])
+    with pytest.raises(openai.APIConnectionError) as info:
+        await adapter.complete(timeout=30)
+    assert type(info.value) is expected
+    decision = classify(info.value)
+    assert decision is not None and decision.retryable
+    assert len(adapter._input) == 1  # nothing appended after a failed attempt
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_json_arguments_become_none(constant):
+    assert _arguments(f'{{"n": {constant}}}') is None
+    assert _arguments('{"n": 1}') == {"n": 1}

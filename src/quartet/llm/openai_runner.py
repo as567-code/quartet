@@ -86,10 +86,18 @@ def usage_from_openai(usage: Any) -> Usage:
     )
 
 
+class _NonFiniteConstant(ValueError):
+    """``NaN`` or ``Infinity`` in a tool call's arguments: JSON has no such numbers."""
+
+
+def _reject_constant(_name: str) -> Any:
+    raise _NonFiniteConstant
+
+
 def _arguments(raw: Any) -> dict[str, Any] | None:
     """Parse a function call's argument string; anything but a JSON object becomes None."""
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(raw, parse_constant=_reject_constant)
     except (TypeError, ValueError):
         return None
     return parsed if isinstance(parsed, dict) else None

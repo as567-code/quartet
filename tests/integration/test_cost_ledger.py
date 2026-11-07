@@ -9,9 +9,20 @@ from sqlalchemy.orm import Session
 
 from quartet.db.models import LlmCall, RoleStep, Task, ToolCall
 from quartet.domain.states import Role
-from quartet.llm.base import ToolCallRecord, Usage
+from quartet.llm.base import (
+    RecorderError,
+    RoleInput,
+    ToolCallRecord,
+    ToolOutcome,
+    Usage,
+)
+from quartet.llm.fake import FakeProvider, FakeTurn, ScriptedToolbox
+from quartet.llm.loop import LoopDeps, run_step
+from quartet.llm.pricing import PricingTable
+from quartet.llm.retry import RetryPolicy
 from quartet.telemetry.cost_ledger import DbStepRecorder, remaining_task_budget
-from tests.unit.llm._records import call_record
+from quartet.telemetry.redaction import Redactor
+from tests.unit.llm._records import FakeClock, call_record, cfg, plan_json
 
 pytestmark = pytest.mark.integration
 
@@ -79,6 +90,97 @@ async def test_tool_call_row(app_engine, task_and_step):
         assert row.args_redacted == {"path": "a.py"} and row.is_error is True
         assert row.duration_ms == 17
         assert s.get_one(Task, task_id).spent_usd == Decimal(0)
+
+
+@pytest.mark.anyio
+async def test_cost_estimated_flag_is_stored(app_engine, task_and_step):
+    task_id, step_id = task_and_step
+    rec = DbStepRecorder(app_engine, task_id=task_id, step_id=step_id)
+    await rec.llm_call(call_record(cost_estimated=True))
+    await rec.llm_call(call_record())
+    with Session(app_engine) as s:
+        flags = s.execute(sa.select(LlmCall.cost_estimated).order_by(LlmCall.created_at)).scalars()
+        assert sorted(flags) == [False, True]
+
+
+@pytest.mark.anyio
+async def test_database_error_becomes_a_content_free_recorder_error(app_engine, task_and_step):
+    task_id, step_id = task_and_step
+    rec = DbStepRecorder(app_engine, task_id=task_id, step_id=step_id)
+    with pytest.raises(RecorderError) as info:
+        await rec.llm_call(call_record(cost=Decimal("-1"), request_id="MARKER-row-text"))
+    assert str(info.value) == "ledger write failed (SQLSTATE 23514)"
+    assert info.value.__context__ is None and info.value.__cause__ is None
+    assert "MARKER" not in str(info.value)
+    with Session(app_engine) as s:
+        assert _count(s, LlmCall) == 0 and s.get_one(Task, task_id).spent_usd == Decimal(0)
+
+
+@pytest.mark.anyio
+async def test_run_step_through_the_db_recorder_writes_one_row_per_call(app_engine, task_and_step):
+    """FakeProvider -> run_step -> DbStepRecorder, with NUL and a lone surrogate in tool args."""
+    task_id, step_id = task_and_step
+
+    async def read(_args):
+        return ToolOutcome("contents", False)
+
+    toolbox = ScriptedToolbox({"read_file": read})
+    nasty = "a\x00b\ud800c"
+    script = [
+        FakeTurn(tool_calls=(("c1", "read_file", {"path": nasty}),)),
+        FakeTurn(final=plan_json()),
+    ]
+
+    async def no_sleep(_s: float) -> None:
+        return None
+
+    deps = LoopDeps(
+        PricingTable.load(), Redactor(), RetryPolicy(), FakeClock(), no_sleep, lambda: 0.5
+    )
+    recorder = DbStepRecorder(app_engine, task_id=task_id, step_id=step_id)
+    result = await run_step(
+        FakeProvider(script), cfg(), RoleInput("Plan it.", (), "t"), toolbox, recorder, deps
+    )
+    assert result.totals.turns == 2 and result.totals.cost_usd > 0
+    with Session(app_engine) as s:
+        assert _count(s, LlmCall) == 2 and _count(s, ToolCall) == 1
+        assert s.get_one(Task, task_id).spent_usd == result.totals.cost_usd
+        row = s.execute(sa.select(ToolCall)).scalar_one()
+        assert row.args_redacted == {"path": "ab\ufffdc"} and row.call_id == "c1"
+
+
+@pytest.mark.anyio
+async def test_billed_attempts_each_get_a_row_and_the_spend_adds_up(app_engine, task_and_step):
+    from dataclasses import replace
+
+    from quartet.llm.base import ProviderError
+
+    task_id, step_id = task_and_step
+
+    class Billed(FakeProvider):
+        async def complete(self, *, timeout):
+            turn = await super().complete(timeout=timeout)
+            if self.calls == 1:
+                failed = replace(turn, stop_reason="failed")
+                raise ProviderError("failed", retryable=True, code="server_error", turn=failed)
+            return turn
+
+    async def no_sleep(_s: float) -> None:
+        return None
+
+    deps = LoopDeps(
+        PricingTable.load(), Redactor(), RetryPolicy(), FakeClock(), no_sleep, lambda: 0.5
+    )
+    recorder = DbStepRecorder(app_engine, task_id=task_id, step_id=step_id)
+    fake = Billed([FakeTurn(), FakeTurn(final=plan_json())])
+    result = await run_step(
+        fake, cfg(), RoleInput("Plan it.", (), "t"), ScriptedToolbox({}), recorder, deps
+    )
+    with Session(app_engine) as s:
+        rows = s.execute(sa.select(LlmCall).order_by(LlmCall.created_at)).scalars().all()
+        assert [(r.stop_reason, r.attempts) for r in rows] == [("failed", 1), ("end_turn", 2)]
+        assert s.get_one(Task, task_id).spent_usd == result.totals.cost_usd
+        assert result.totals.cost_usd == sum((r.cost_usd for r in rows), Decimal(0))
 
 
 def test_remaining_task_budget(app_engine, app_session, task_and_step):
