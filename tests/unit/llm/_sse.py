@@ -1,7 +1,8 @@
-"""SSE encoding and message builders for the Anthropic streaming wire format.
+"""SSE encoding and message builders for the Anthropic and OpenAI streaming wire formats.
 
-``anthropic_sse`` turns a complete message dict into the event stream the SDK parses, so tests
-and the Task 15 cassettes replay through the same code path as real traffic.
+``anthropic_sse`` and ``openai_sse`` turn a complete message or response dict into the event
+stream the SDK parses, so tests and the Task 15 cassettes replay through the same code path as
+real traffic.
 """
 
 import json
@@ -15,6 +16,7 @@ from anthropic.types.beta import (
     BetaTextBlock,
     BetaUsage,
 )
+from openai.types.responses import Response
 
 MODEL = "claude-opus-5-5"
 DEFAULT_USAGE: dict[str, Any] = {
@@ -138,3 +140,99 @@ def beta_message(
         stop_details=cast(Any, SimpleNamespace(category=None)),
         usage=usage,
     )
+
+
+ns = SimpleNamespace
+OPENAI_MODEL = "gpt-6.1-sol"
+
+
+def openai_sse(response: dict[str, Any] | Response, terminal: str = "response.completed") -> bytes:
+    """``response.created`` (in progress, no output), then the terminal event with the response.
+
+    The SDK's accumulator needs no ``response.output_item.*`` events when the terminal event
+    carries the whole ``output``.
+    """
+    if isinstance(response, Response):
+        response = response.to_dict(mode="json")
+    if terminal == "response.completed" and response.get("status") in ("incomplete", "failed"):
+        terminal = f"response.{response['status']}"  # the event type follows the status
+    created = {**response, "status": "in_progress", "output": [], "usage": None, "error": None}
+    created["incomplete_details"] = None
+    return _event("response.created", {"response": created, "sequence_number": 0}) + _event(
+        terminal, {"response": response, "sequence_number": 1}
+    )
+
+
+def usage(input: int, cached: int, writes: int, output: int, reasoning: int = 0) -> dict[str, Any]:
+    """OpenAI usage; all cache writes are reported as 30-minute writes."""
+    return {
+        "input_tokens": input,
+        "input_tokens_details": {
+            "cached_tokens": cached,
+            "cache_write_tokens": writes,
+            "cache_write_tokens_details": {"ttl_30m_tokens": writes, "ttl_12h_tokens": 0},
+        },
+        "output_tokens": output,
+        "output_tokens_details": {"reasoning_tokens": reasoning},
+        "total_tokens": input + output,
+    }
+
+
+def resp(
+    *,
+    status: str = "completed",
+    reason: str | None = None,
+    output: list[dict[str, Any]],
+    usage: dict[str, Any] | None,
+    error_code: str | None = None,
+) -> Response:
+    """A validated ``Response``, so adapter code sees the same types as on the wire."""
+    return Response.model_validate(
+        {
+            "id": "resp_test",
+            "object": "response",
+            "created_at": 1.0,
+            "model": OPENAI_MODEL,
+            "status": status,
+            "incomplete_details": {"reason": reason} if reason else None,
+            "error": {"code": error_code, "message": "boom"} if error_code else None,
+            "output": output,
+            "parallel_tool_calls": True,
+            "tool_choice": "auto",
+            "tools": [],
+            "usage": usage,
+        }
+    )
+
+
+def reasoning_item() -> dict[str, Any]:
+    return {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc", "summary": []}
+
+
+def function_call_item(call_id: str, name: str, arguments: str) -> dict[str, Any]:
+    return {
+        "type": "function_call",
+        "id": f"fc_{call_id}",
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+        "status": "completed",
+    }
+
+
+def message_item(*parts: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "id": "msg_1",
+        "role": "assistant",
+        "status": "completed",
+        "content": list(parts),
+    }
+
+
+def text_part(text: str) -> dict[str, Any]:
+    return {"type": "output_text", "text": text, "annotations": []}
+
+
+def refusal_part(text: str = "no") -> dict[str, Any]:
+    return {"type": "refusal", "refusal": text}
