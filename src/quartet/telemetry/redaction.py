@@ -28,11 +28,14 @@ PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"(?i)(?<![A-Za-z0-9])(authorization)([\"']?\s*[:=]\s*[\"']?)[^\r\n\"']+"),
         rf"\1\2{REDACTED}",
     ),
-    # 6b: single-token secret values for key and password fields.
+    # 6b: key and password fields. A known auth scheme word is skipped so the credential after it
+    # is redacted; a quoted value is redacted up to its closing quote, otherwise one token.
     (
         re.compile(
             r"(?i)(?<![A-Za-z0-9])(x-api-key|api[_-]?key|password|passwd)"
-            r"([\"']?\s*[:=]\s*[\"']?)[^\s\"',]+"
+            r"([\"']?\s*[:=]\s*[\"']?)"
+            r"(?:(?:basic|bearer|token|digest|apikey|negotiate|ntlm|ssws)\s+)?"
+            r"(?:(?<=\")[^\"\r\n]*|(?<=')[^'\r\n]*|[^\s\"',]+)"
         ),
         rf"\1\2{REDACTED}",
     ),

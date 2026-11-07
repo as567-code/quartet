@@ -229,3 +229,37 @@ def test_single_token_keys_redact_one_token(text, leak, keep):
     assert leak not in out and REDACTED in out
     if keep is not None:
         assert keep in out
+
+
+CRED = "Zq9" + "x" * 17
+KEYWORDS = ["Authorization", "x-api-key", "api_key", "api-key", "password", "passwd"]
+SCHEMES = ["", "Basic ", "Bearer ", "Token ", "Digest ", "ApiKey ", "Negotiate ", "NTLM ", "SSWS "]
+SEPARATORS = [": ", "=", '": "']
+
+
+@pytest.mark.parametrize("keyword", KEYWORDS)
+@pytest.mark.parametrize("scheme", SCHEMES)
+@pytest.mark.parametrize("separator", SEPARATORS)
+def test_keyword_scheme_separator_matrix_never_leaks(keyword, scheme, separator):
+    out = Redactor().redact(f"{keyword}{separator}{scheme}{CRED}")
+    assert CRED not in out and REDACTED in out
+
+
+@pytest.mark.parametrize(
+    ("text", "leaks"),
+    [
+        ('password: "my secret pass"', ["my", "secret", "pass"]),
+        ("password='my secret pass'", ["my", "secret", "pass"]),
+        ('{"api_key": "two words here", "x": 1}', ["two", "words", "here"]),
+    ],
+)
+def test_quoted_multi_word_values_fully_redacted(text, leaks):
+    out = Redactor().redact(text)
+    assert REDACTED in out
+    assert not any(word in out.replace("password", "").replace("api_key", "") for word in leaks)
+
+
+def test_quoted_value_keeps_following_json_field_and_unquoted_keeps_text():
+    out = Redactor().redact('{"api_key": "two words here", "x": 1}')
+    assert '"x": 1' in out
+    assert "host=db" in Redactor().redact("password=secret host=db")
