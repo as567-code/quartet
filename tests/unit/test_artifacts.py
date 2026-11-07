@@ -7,13 +7,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from quartet.domain.artifacts import (
     ARTIFACT_KINDS,
+    ARTIFACT_MODELS,
     ContextDigest,
     Finding,
     Plan,
     ReviewReport,
     TestReport,
     _strictify,
+    count_union_params,
     strict_json_schema,
+    strictify_schema,
 )
 
 FORBIDDEN = {
@@ -238,3 +241,19 @@ def test_strict_schema_rejects_ref_cycles():
     Node.model_rebuild()
     with pytest.raises(ValueError, match="cycle"):
         strict_json_schema(Node)
+
+
+def test_artifact_models_cover_kinds_and_digest():
+    assert (*ARTIFACT_KINDS.values(), ContextDigest) == ARTIFACT_MODELS
+
+
+def test_strictify_schema_is_idempotent_on_artifact_schemas():
+    for model in ARTIFACT_MODELS:
+        s = strict_json_schema(model)
+        assert strictify_schema(s) == s
+
+
+def test_union_param_counts():  # Anthropic strict budget: <= 16 unions per request (Task 9)
+    assert count_union_params(strict_json_schema(ReviewReport)) == 2  # Finding.line, .suggestion
+    assert count_union_params(strict_json_schema(Plan)) == 1  # out_of_scope_reason
+    assert max(count_union_params(strict_json_schema(m)) for m in ARTIFACT_MODELS) <= 2

@@ -156,6 +156,8 @@ ARTIFACT_KINDS: Mapping[str, type[BaseModel]] = MappingProxyType(
     }
 )
 
+ARTIFACT_MODELS: tuple[type[BaseModel], ...] = (*ARTIFACT_KINDS.values(), ContextDigest)
+
 # Keys whose value maps arbitrary names to sub-schemas (the names are not keywords).
 _SCHEMA_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
 # Keys whose value is plain data, not a schema.
@@ -227,12 +229,41 @@ def _assert_no_ref_cycle(schema: dict[str, Any]) -> None:
         visit(ref)
 
 
-def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """Strict-mode JSON schema for ``model`` (a new dict; pydantic's cached one is untouched).
+def strictify_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Strict form of any JSON schema (a new dict; ``schema`` is untouched).
 
     Raises ``ValueError`` on keywords the vendors' strict modes reject or on ``$ref`` cycles.
     """
-    raw = model.model_json_schema()
+    raw = dict(schema)
     _assert_no_ref_cycle(raw)
     result: dict[str, Any] = _strictify(raw)
     return result
+
+
+def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Strict-mode JSON schema for ``model`` (pydantic's cached schema is untouched)."""
+    return strictify_schema(model.model_json_schema())
+
+
+def count_union_params(schema: Mapping[str, Any]) -> int:
+    """Count property schemas with an ``anyOf`` or a list-valued ``type`` (``$defs`` included)."""
+
+    def walk(node: Any) -> int:
+        if isinstance(node, list):
+            return sum(walk(item) for item in node)
+        if not isinstance(node, dict):
+            return 0
+        total = 0
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                total += sum(
+                    1
+                    for sub in value.values()
+                    if isinstance(sub, dict)
+                    and ("anyOf" in sub or isinstance(sub.get("type"), list))
+                )
+            if key not in _DATA_KEYS:
+                total += walk(value)
+        return total
+
+    return walk(schema)
