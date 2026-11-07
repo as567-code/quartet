@@ -245,7 +245,7 @@ class OpenAIAdapter(ProviderAdapter):
             err.request_id = request_id
             raise
         self._input.extend(item.to_dict() for item in response.output)
-        self._pending = [r.call_id for r in turn.tool_requests]
+        self._pending = [i.call_id for i in response.output if i.type == "function_call"]
         return replace(turn, request_id=request_id)
 
     def add_tool_results(self, results: Sequence[ToolResult]) -> None:

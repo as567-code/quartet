@@ -397,3 +397,33 @@ async def test_failed_response_over_transport_carries_billed_turn_and_request_id
     err = info.value
     assert err.request_id == "req_1" and err.retryable is True
     assert isinstance(err.turn, ProviderTurn) and err.turn.request_id == "req_1"
+
+
+def truncated_with_call() -> Response:
+    return resp(
+        status="incomplete",
+        reason="max_output_tokens",
+        output=[reasoning_item(), function_call_item("c1", "echo", '{"text": "x')],
+        usage=usage(1_000, 0, 0, 900),
+    )
+
+
+async def test_truncated_function_call_is_answered_before_user_text(capture):
+    adapter = adapter_for(capture, truncated_with_call(), final())
+    adapter.begin(config(), PROMPT, [ECHO])
+    turn = await adapter.complete(timeout=30)
+    assert turn.stop is StopKind.TRUNCATED
+    adapter.add_user_text("again")
+    await adapter.complete(timeout=30)
+    tail = capture.bodies[1]["input"][-2:]
+    assert tail[0]["type"] == "function_call_output" and tail[0]["call_id"] == "c1"
+    assert json.loads(tail[0]["output"])["is_error"] is True
+    assert tail[1]["role"] == "user"
+
+
+async def test_loop_over_transport_truncated_function_call_then_valid(capture):
+    adapter = adapter_for(capture, truncated_with_call(), final())
+    result, recorder = await run(adapter, capture, Box())
+    assert result.repairs == 1 and len(recorder.llm) == 2
+    outputs = [i for i in capture.bodies[1]["input"] if i.get("type") == "function_call_output"]
+    assert [o["call_id"] for o in outputs] == ["c1"]
