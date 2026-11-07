@@ -1,0 +1,155 @@
+"""Typed retry policy: the only retry layer (SDK clients are built with ``max_retries=0``).
+
+Backoff is full jitter, and every sleep is bounded by the step's wall-clock budget. Only the SDK
+error types named in ``classify`` are handled; anything else propagates unchanged. Re-raised
+provider errors use ``from None`` and carry redacted text only (FR-30).
+"""
+
+import asyncio
+import random
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+import anthropic
+import openai
+
+from quartet.llm.base import BudgetExceeded, ProviderError
+from quartet.llm.budget import StepBudget
+from quartet.telemetry.redaction import Redactor
+
+
+@dataclass(frozen=True, slots=True)
+class RetryPolicy:
+    max_attempts: int = 4
+    base_seconds: float = 1.0
+    cap_seconds: float = 30.0
+    max_retry_after_seconds: float = 60.0
+
+
+@dataclass(frozen=True, slots=True)
+class RetryDecision:
+    retryable: bool
+    retry_after: float | None
+    status: int | None
+    code: str | None
+    request_id: str | None
+
+
+_RETRYABLE_STATUSES = frozenset({408, 409, 429})
+
+
+def _parse_seconds(raw: str | None, *, scale: float) -> float | None:
+    """A non-negative number of seconds, else ``None`` (an HTTP-date is ``None``)."""
+    if raw is None:
+        return None
+    try:
+        value = float(raw.strip()) * scale
+    except ValueError:
+        return None
+    return value if 0.0 <= value < float("inf") else None
+
+
+def _retry_after(headers: "dict[str, str] | object") -> float | None:
+    get = getattr(headers, "get", None)
+    if get is None:
+        return None
+    ms = _parse_seconds(get("retry-after-ms"), scale=0.001)
+    if ms is not None:
+        return ms
+    return _parse_seconds(get("retry-after"), scale=1.0)
+
+
+def _status_retryable(exc: anthropic.APIStatusError | openai.APIStatusError) -> bool:
+    should_retry = exc.response.headers.get("x-should-retry")
+    if should_retry is not None:
+        lowered = should_retry.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    if isinstance(exc, openai.RateLimitError) and exc.code == "insufficient_quota":
+        return False
+    status = exc.status_code
+    return status in _RETRYABLE_STATUSES or status >= 500
+
+
+def classify(exc: Exception) -> RetryDecision | None:
+    """Classify a provider failure, or ``None`` when ``exc`` is not one."""
+    if isinstance(exc, anthropic.APIStatusError | openai.APIStatusError):
+        code = getattr(exc, "code", None)
+        return RetryDecision(
+            retryable=_status_retryable(exc),
+            retry_after=_retry_after(exc.response.headers),
+            status=exc.status_code,
+            code=None if code is None else str(code),
+            request_id=exc.request_id,
+        )
+    if isinstance(exc, anthropic.APIConnectionError | openai.APIConnectionError):
+        return RetryDecision(True, None, None, None, None)
+    if isinstance(exc, ProviderError):
+        return RetryDecision(exc.retryable, None, exc.status, exc.code, exc.request_id)
+    if isinstance(exc, anthropic.APIError | openai.APIError):
+        code = getattr(exc, "code", None)
+        return RetryDecision(False, None, None, None if code is None else str(code), None)
+    return None
+
+
+def _fail(
+    exc: Exception, decision: RetryDecision, message: str, *, retryable: bool
+) -> ProviderError:
+    return ProviderError(
+        message,
+        retryable=retryable,
+        status=decision.status,
+        code=decision.code,
+        request_id=decision.request_id,
+        turn=exc.turn if isinstance(exc, ProviderError) else None,
+    )
+
+
+async def call_with_retries[T](
+    attempt: Callable[[float], Awaitable[T]],
+    *,
+    budget: StepBudget,
+    policy: RetryPolicy,
+    redactor: Redactor,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    rand: Callable[[], float] = random.random,
+) -> tuple[T, int]:
+    n = 0
+    while True:
+        n += 1
+        budget.check_wall_clock()
+        try:
+            return await attempt(budget.remaining_seconds()), n
+        except (anthropic.APIError, openai.APIError, ProviderError) as exc:
+            decision = classify(exc)
+            if decision is None:  # pragma: no cover - the except clause names only classified types
+                raise
+            text = (
+                f"{type(exc).__name__} (status {decision.status}, code {decision.code}): "
+                f"{redactor.redact(str(exc))}"
+            )
+            if not decision.retryable:
+                raise _fail(exc, decision, text, retryable=False) from None
+            if n >= policy.max_attempts:
+                raise _fail(
+                    exc, decision, f"gave up after {n} attempts: {text}", retryable=True
+                ) from None
+            if decision.retry_after is not None:
+                if decision.retry_after > policy.max_retry_after_seconds:
+                    raise _fail(
+                        exc,
+                        decision,
+                        f"retry-after {decision.retry_after:g}s exceeds the "
+                        f"{policy.max_retry_after_seconds:g}s cap: {text}",
+                        retryable=True,
+                    ) from None
+                delay = decision.retry_after
+            else:
+                delay = rand() * min(policy.cap_seconds, policy.base_seconds * 2 ** (n - 1))
+            remaining = budget.remaining_seconds()
+            if delay >= remaining:
+                limit = budget.totals().elapsed_seconds + remaining
+                raise BudgetExceeded("wall_clock", limit - remaining, limit) from None
+        await sleep(delay)
