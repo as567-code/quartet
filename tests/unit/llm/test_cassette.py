@@ -1,3 +1,4 @@
+import json
 from dataclasses import fields
 from pathlib import Path
 
@@ -136,3 +137,63 @@ def test_save_rechecks_patterns_even_if_redactor_misses(
             Redactor(),
         )
     assert not (tmp_path / "c.json").exists()
+
+
+def test_save_refuses_key_value_secret_in_decoded_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The quotes in this value are escaped once JSON-serialised, which hides it from a text check.
+    monkeypatch.setattr(Redactor, "redact", lambda self, text: text)
+    exchange = Exchange("POST", "/", {}, 200, {}, '{"password": "hunter2hunter2"}')
+    with pytest.raises(ValueError, match="response_body"):
+        save_cassette(tmp_path / "c.json", [exchange], Redactor())
+    assert not (tmp_path / "c.json").exists()
+
+
+def test_save_redacts_key_value_secret_in_body(tmp_path: Path) -> None:
+    exchange = Exchange("POST", "/", {}, 200, {}, '{"password": "hunter2hunter2"}')
+    save_cassette(tmp_path / "c.json", [exchange], Redactor())
+    assert "hunter2hunter2" not in (tmp_path / "c.json").read_text(encoding="utf-8")
+
+
+def test_save_refuses_key_value_pair_inside_request_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Redactor, "redact", lambda self, text: text)
+    exchange = Exchange("POST", "/", {"password": "hunter2hunter2"}, 200, {}, "{}")
+    with pytest.raises(ValueError, match="request_body"):
+        save_cassette(tmp_path / "c.json", [exchange], Redactor())
+    assert not (tmp_path / "c.json").exists()
+
+
+@pytest.mark.parametrize("header", ["set-cookie", "Openai-Organization"])
+def test_save_refuses_header_outside_allowlist(tmp_path: Path, header: str) -> None:
+    exchange = Exchange("POST", "/", {}, 200, {header: "s=1"}, "{}")
+    with pytest.raises(ValueError, match="allowlist"):
+        save_cassette(tmp_path / "c.json", [exchange], Redactor())
+    assert not (tmp_path / "c.json").exists()
+
+
+@pytest.mark.anyio
+async def test_recording_keeps_non_json_request_body_as_text() -> None:
+    inner = httpx2.MockTransport(lambda req: httpx2.Response(200, content=b"{}"))
+    rec = RecordingTransport(inner)
+    async with httpx2.AsyncClient(transport=rec) as c:
+        await c.post("https://x/v1/messages", content=b"plain text")
+    assert rec.exchanges[0].request_body == "plain text"
+
+
+@pytest.mark.anyio
+async def test_recording_rejects_non_utf8_response_body() -> None:
+    inner = httpx2.MockTransport(lambda req: httpx2.Response(200, content=b"\xff\xfe"))
+    rec = RecordingTransport(inner)
+    async with httpx2.AsyncClient(transport=rec) as c:
+        with pytest.raises(ValueError, match="UTF-8"):
+            await c.get("https://x/v1/models")
+
+
+def test_load_rejects_unknown_cassette_version(tmp_path: Path) -> None:
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"version": 2, "exchanges": []}), encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported cassette version"):
+        load_cassette(path)
