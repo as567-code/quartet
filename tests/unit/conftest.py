@@ -40,8 +40,8 @@ def _hermetic_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 @pytest.fixture(scope="session")
 def _span_exporter_session() -> InMemorySpanExporter:
-    """The one global TracerProvider (settable once per process), registered before any SDK
-    client exists so the Anthropic SDK's own spans land here too."""
+    """The one global TracerProvider (settable once per process), registered once per session,
+    before the first test that requests it."""
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))

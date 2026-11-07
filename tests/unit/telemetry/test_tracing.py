@@ -60,6 +60,7 @@ def test_exceptions_crossing_spans_are_not_recorded(span_exporter):
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 3
     for s in spans:
+        assert s.status.status_code is StatusCode.UNSET
         assert s.events == () and key not in (s.status.description or "")
 
 

@@ -4,6 +4,7 @@ import logging
 import re
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import quote
 
 from psycopg.conninfo import conninfo_to_dict
 
@@ -14,14 +15,15 @@ _MIN_SECRET_LENGTH = 8
 
 # (compiled pattern, replacement); applied in this order after the exact secret values.
 PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"), REDACTED),
-    (re.compile(r"sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}"), REDACTED),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{8,}"), REDACTED),
+    (re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}"), REDACTED),
     (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), REDACTED),
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), REDACTED),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{8,}=*"), REDACTED),
     (
         re.compile(
-            r"(?i)\b(x-api-key|api[_-]?key|authorization)([\"']?\s*[:=]\s*[\"']?)[^\s\"',]+"
+            r"(?i)(?<![A-Za-z0-9])(x-api-key|api[_-]?key|authorization|password|passwd)"
+            r"([\"']?\s*[:=]\s*[\"']?)(?:[A-Za-z]+\s+)?[^\s\"',]+"
         ),
         rf"\1\2{REDACTED}",
     ),
@@ -36,7 +38,11 @@ class Redactor:
     """Replaces known secret values, then well-known secret shapes, with ``REDACTED``."""
 
     def __init__(self, secrets: Iterable[str] = ()) -> None:
-        values = {s for s in secrets if len(s) >= _MIN_SECRET_LENGTH}
+        values: set[str] = set()
+        for s in secrets:
+            if len(s) >= _MIN_SECRET_LENGTH:
+                values.add(s)
+                values.add(quote(s, safe=""))  # percent-encoded form, as inside a URL
         # Longest first so a secret that contains another is replaced whole.
         self._secrets = sorted(values, key=len, reverse=True)
 
@@ -86,8 +92,7 @@ class RedactingFilter(logging.Filter):
         self._redactor = redactor
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = self._redactor.redact(record.getMessage())
-        record.args = ()
+        _redact_record(record, self._redactor)
         return True
 
 
@@ -117,11 +122,25 @@ def _redacted_message(record: logging.LogRecord, redactor: Redactor) -> str:
         return " ".join(redactor.redact(_safe_str(x)) for x in (record.msg, *parts))
 
 
+def _redact_record(record: logging.LogRecord, redactor: Redactor) -> None:
+    record.msg = _redacted_message(record, redactor)
+    record.args = ()
+    if record.exc_info:
+        # Render now, redacted: formatters would otherwise print the raw traceback later.
+        record.exc_text = redactor.redact(logging.Formatter().formatException(record.exc_info))
+        record.exc_info = None
+    elif record.exc_text:
+        record.exc_text = redactor.redact(record.exc_text)
+    if record.stack_info:
+        record.stack_info = redactor.redact(record.stack_info)
+
+
 def install_log_redaction(redactor: Redactor) -> None:
     """Redact every log record at creation, whichever logger emitted it.
 
     A filter on a logger never sees records propagated from child loggers, so the hook is the
-    record factory. Idempotent: later calls only swap the redactor in use.
+    record factory. Idempotent: later calls only swap the redactor in use. An exception raised
+    by a user ``__str__`` outside the caught error types may still propagate.
     """
     _factory_state["redactor"] = redactor
     if _factory_state["installed"]:
@@ -130,8 +149,7 @@ def install_log_redaction(redactor: Redactor) -> None:
 
     def factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
         record = inner(*args, **kwargs)
-        record.msg = _redacted_message(record, _factory_state["redactor"])
-        record.args = ()
+        _redact_record(record, _factory_state["redactor"])
         return record
 
     logging.setLogRecordFactory(factory)

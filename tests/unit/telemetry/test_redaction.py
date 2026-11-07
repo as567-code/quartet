@@ -83,7 +83,9 @@ def test_redactor_from_settings_covers_keys_and_db_passwords():
 
 def test_bad_format_string_does_not_raise_and_is_redacted(caplog):
     install_log_redaction(Redactor())
-    logging.getLogger("quartet.test").info("n=%d", FAKES[0])  # mismatched args
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("quartet.test").info("n=%d", FAKES[0])  # mismatched args
+    assert caplog.records and REDACTED in caplog.text
     assert FAKES[0] not in caplog.text
 
 
@@ -92,8 +94,8 @@ def test_logging_filter(caplog):
     with caplog.at_level(logging.INFO):
         logging.getLogger("quartet.test.child").warning("got %s", FAKES[0])
         logging.getLogger("anthropic._base_client").info("hdr %(k)s", {"k": FAKES[1]})
+    assert caplog.records and REDACTED in caplog.text
     assert FAKES[0] not in caplog.text and FAKES[1] not in caplog.text
-    assert REDACTED in caplog.text
 
 
 def test_install_is_idempotent_and_swaps_redactor(caplog):
@@ -102,12 +104,14 @@ def test_install_is_idempotent_and_swaps_redactor(caplog):
     install_log_redaction(Redactor(["swapped-secret-value"]))
     assert logging.getLogRecordFactory() is factory
     logging.getLogger("quartet.test").warning("x swapped-secret-value")
+    assert caplog.records and REDACTED in caplog.text
     assert "swapped-secret-value" not in caplog.text
 
 
 def test_missing_mapping_key_does_not_raise(caplog):
     install_log_redaction(Redactor())
     logging.getLogger("quartet.test").warning("%(missing)s", {"other": FAKES[0]})
+    assert caplog.records and REDACTED in caplog.text
     assert FAKES[0] not in caplog.text
 
 
@@ -115,3 +119,53 @@ def test_redacting_filter_for_handlers():
     record = logging.LogRecord("n", logging.INFO, __file__, 1, "k=%s", (FAKES[0],), None)
     assert RedactingFilter(Redactor()).filter(record)
     assert FAKES[0] not in record.getMessage() and record.args == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "leak"),
+    [
+        ("ANTHROPIC_API_KEY=plainvalue123456", "plainvalue123456"),
+        ("password=s3cr3t host=db", "s3cr3t"),
+        ("Authorization: Basic dXNlcjpzZWNyZXQ=", "dXNlcjpzZWNyZXQ"),
+        ("Authorization: token abcdefghijklmnop1234", "abcdefghijklmnop1234"),
+    ],
+)
+def test_extended_leak_cases(text, leak):
+    out = Redactor().redact(text)
+    assert leak not in out and REDACTED in out
+
+
+def test_word_boundary_on_sk_patterns():
+    for text in ("task-3-redaction-and-tracing-helpers", "desk-0123456789abcdef0123456789"):
+        assert Redactor().redact(text) == text
+
+
+def test_percent_encoded_known_secret():
+    r = Redactor(["p@ss:word-long"])
+    assert "p%40ss%3Aword-long" not in r.redact("pw=p%40ss%3Aword-long")
+    assert "p%40ss" not in r.redact("postgresql://u:p%40ss%3Aword-long@h/db")
+
+
+def test_exception_text_redacted_in_logs(caplog):
+    install_log_redaction(Redactor())
+    with caplog.at_level(logging.INFO):
+        try:
+            raise ValueError(f"bad key {FAKES[0]}")
+        except ValueError:
+            logging.getLogger("quartet.test").exception("failed")
+    assert "ValueError" in caplog.text and REDACTED in caplog.text
+    assert FAKES[0] not in caplog.text
+
+
+def test_stack_info_redacted_in_logs(caplog):
+    install_log_redaction(Redactor())
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("quartet.test").info(f"stack {FAKES[0]}", stack_info=True)
+    assert "Stack (most recent call last)" in caplog.text and REDACTED in caplog.text
+    assert FAKES[0] not in caplog.text
+
+
+def test_redacting_filter_survives_bad_format_string():
+    record = logging.LogRecord("n", logging.INFO, __file__, 1, "n=%d", (FAKES[0],), None)
+    assert RedactingFilter(Redactor()).filter(record)
+    assert FAKES[0] not in record.getMessage() and REDACTED in record.getMessage()
