@@ -44,13 +44,21 @@ def _cap_16k(value: str) -> str:
     return value
 
 
-def _truncate_excerpt(value: str) -> str:
-    if len(value.encode("utf-8")) <= EXCERPT_CAP_BYTES:
+def truncate_utf8(value: str, cap: int) -> str:
+    """Return ``value`` unchanged if it fits in ``cap`` UTF-8 bytes, else cut it and add the suffix.
+
+    The result is at most ``cap`` bytes and always ends with ``TRUNCATION_SUFFIX``.
+    """
+    if len(value.encode("utf-8")) <= cap:
         return value
-    budget = EXCERPT_CAP_BYTES - len(TRUNCATION_SUFFIX.encode("utf-8"))
+    budget = cap - len(TRUNCATION_SUFFIX.encode("utf-8"))
     # errors="ignore" drops a trailing partial sequence, so the cut lands on a character boundary.
     head = value.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
     return head + TRUNCATION_SUFFIX
+
+
+def _truncate_excerpt(value: str) -> str:
+    return truncate_utf8(value, EXCERPT_CAP_BYTES)
 
 
 Text16K = Annotated[str, AfterValidator(_cap_16k)]
