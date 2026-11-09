@@ -56,3 +56,20 @@ def test_test_job_uses_compose_postgres_image():
     for wf in WF:
         service = wf["jobs"]["test"]["services"]["postgres"]
         assert service["image"] == COMPOSE["services"]["postgres"]["image"]
+
+
+def test_release_download_curls_retry_on_transient_cdn_errors():
+    retry = "--retry 6 --retry-all-errors --retry-delay 10 --connect-timeout 20 --max-time 120"
+    downloads = []
+    for wf in WF:
+        for job in wf["jobs"].values():
+            for step in job.get("steps", []):
+                joined = re.sub(r"\\\n\s*", " ", step.get("run", ""))
+                downloads += [
+                    line
+                    for line in joined.splitlines()
+                    if "curl " in line and "/releases/download/" in line
+                ]
+    assert downloads, "expected release-binary curl downloads in ci.yml"
+    for line in downloads:
+        assert retry in line, line
