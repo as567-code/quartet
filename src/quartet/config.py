@@ -70,7 +70,9 @@ def _check_db_url(value: SecretStr | None) -> SecretStr | None:
 class Settings(BaseSettings):
     """Quartet runtime settings. Secrets are ``SecretStr`` and never appear in ``repr``."""
 
-    model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
+    model_config = SettingsConfigDict(
+        extra="ignore", hide_input_in_errors=True, env_ignore_empty=True
+    )
 
     database_url: SecretStr = Field(validation_alias="QUARTET_DATABASE_URL")
     admin_database_url: SecretStr | None = Field(
@@ -134,6 +136,11 @@ def _resolve_env_file(env_file: Path | None) -> Path | None:
     if chosen is not None:
         _verify_env_file(chosen)
     return chosen
+
+
+def selected_env_file() -> Path | None:
+    """The env file ``load_settings()`` picks with no argument, or ``None``."""
+    return _resolve_env_file(None)
 
 
 def load_settings(env_file: Path | None = None) -> Settings:

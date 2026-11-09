@@ -44,13 +44,21 @@ def _cap_16k(value: str) -> str:
     return value
 
 
-def _truncate_excerpt(value: str) -> str:
-    if len(value.encode("utf-8")) <= EXCERPT_CAP_BYTES:
+def truncate_utf8(value: str, cap: int) -> str:
+    """Return ``value`` unchanged if it fits in ``cap`` UTF-8 bytes, else cut it and add the suffix.
+
+    The result is at most ``cap`` bytes and always ends with ``TRUNCATION_SUFFIX``.
+    """
+    if len(value.encode("utf-8")) <= cap:
         return value
-    budget = EXCERPT_CAP_BYTES - len(TRUNCATION_SUFFIX.encode("utf-8"))
+    budget = cap - len(TRUNCATION_SUFFIX.encode("utf-8"))
     # errors="ignore" drops a trailing partial sequence, so the cut lands on a character boundary.
     head = value.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
     return head + TRUNCATION_SUFFIX
+
+
+def _truncate_excerpt(value: str) -> str:
+    return truncate_utf8(value, EXCERPT_CAP_BYTES)
 
 
 Text16K = Annotated[str, AfterValidator(_cap_16k)]
@@ -156,6 +164,8 @@ ARTIFACT_KINDS: Mapping[str, type[BaseModel]] = MappingProxyType(
     }
 )
 
+ARTIFACT_MODELS: tuple[type[BaseModel], ...] = (*ARTIFACT_KINDS.values(), ContextDigest)
+
 # Keys whose value maps arbitrary names to sub-schemas (the names are not keywords).
 _SCHEMA_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
 # Keys whose value is plain data, not a schema.
@@ -227,12 +237,41 @@ def _assert_no_ref_cycle(schema: dict[str, Any]) -> None:
         visit(ref)
 
 
-def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """Strict-mode JSON schema for ``model`` (a new dict; pydantic's cached one is untouched).
+def strictify_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Strict form of any JSON schema (a new dict; ``schema`` is untouched).
 
     Raises ``ValueError`` on keywords the vendors' strict modes reject or on ``$ref`` cycles.
     """
-    raw = model.model_json_schema()
+    raw = dict(schema)
     _assert_no_ref_cycle(raw)
     result: dict[str, Any] = _strictify(raw)
     return result
+
+
+def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Strict-mode JSON schema for ``model`` (pydantic's cached schema is untouched)."""
+    return strictify_schema(model.model_json_schema())
+
+
+def count_union_params(schema: Mapping[str, Any]) -> int:
+    """Count property schemas with an ``anyOf`` or a list-valued ``type`` (``$defs`` included)."""
+
+    def walk(node: Any) -> int:
+        if isinstance(node, list):
+            return sum(walk(item) for item in node)
+        if not isinstance(node, dict):
+            return 0
+        total = 0
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                total += sum(
+                    1
+                    for sub in value.values()
+                    if isinstance(sub, dict)
+                    and ("anyOf" in sub or isinstance(sub.get("type"), list))
+                )
+            if key not in _DATA_KEYS:
+                total += walk(value)
+        return total
+
+    return walk(schema)

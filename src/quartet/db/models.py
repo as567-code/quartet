@@ -51,6 +51,14 @@ LEASE_SOURCES = ("plan", "extension")
 CHECKPOINT_KINDS = ("plan", "merge", "security")
 CHECKPOINT_STATUSES = ("pending", "approved", "rejected")
 INTERVENTION_SOURCES = ("cli", "auto")
+LLM_PROVIDERS = ("anthropic", "openai")
+LLM_TOKEN_COLUMNS = (
+    "tokens_in",
+    "tokens_out",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+)
 
 
 def _pk() -> Mapped[uuid.UUID]:
@@ -114,8 +122,8 @@ class Task(Base):
     risk_level: Mapped[str | None]
     lease_owner: Mapped[str | None]
     lease_expires_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
-    budget_usd: Mapped[Decimal] = mapped_column(sa.Numeric(12, 4), server_default="5.0000")
-    spent_usd: Mapped[Decimal] = mapped_column(sa.Numeric(12, 4), server_default="0")
+    budget_usd: Mapped[Decimal] = mapped_column(sa.Numeric(14, 6), server_default="5.000000")
+    spent_usd: Mapped[Decimal] = mapped_column(sa.Numeric(14, 6), server_default="0")
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 
@@ -168,17 +176,36 @@ class Handover(Base):
 
 
 class LlmCall(Base):
+    """One model call. ``tokens_in`` is *uncached* input only, so the full prompt is
+    ``tokens_in + cache_read_tokens + cache_write_tokens``. ``reasoning_tokens`` is a subset of
+    ``tokens_out``. ``requested_model`` is what Quartet asked for; ``model`` is what served it.
+    """
+
     __tablename__ = "llm_calls"
+    __table_args__ = (
+        _in("provider", LLM_PROVIDERS, "ck_llm_calls_provider"),
+        sa.CheckConstraint(
+            " AND ".join(f"{c} >= 0" for c in LLM_TOKEN_COLUMNS),
+            name="ck_llm_calls_tokens_nonneg",
+        ),
+        sa.CheckConstraint("cost_usd >= 0", name="ck_llm_calls_cost_nonneg"),
+    )
 
     id: Mapped[uuid.UUID] = _pk()
     step_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("role_steps.id"), index=True)
     provider: Mapped[str]
+    requested_model: Mapped[str]
     model: Mapped[str]
+    request_id: Mapped[str | None]
     tokens_in: Mapped[int] = mapped_column(server_default="0")
     tokens_out: Mapped[int] = mapped_column(server_default="0")
     cache_read_tokens: Mapped[int] = mapped_column(server_default="0")
     cache_write_tokens: Mapped[int] = mapped_column(server_default="0")
-    cost_usd: Mapped[Decimal] = mapped_column(sa.Numeric(12, 4), server_default="0")
+    reasoning_tokens: Mapped[int] = mapped_column(server_default="0")
+    attempts: Mapped[int] = mapped_column(server_default="1")
+    cost_usd: Mapped[Decimal] = mapped_column(sa.Numeric(14, 6), server_default="0")
+    # True when the model was unpriced and cost_usd is the ceiling price (an over-estimate).
+    cost_estimated: Mapped[bool] = mapped_column(server_default=sa.false())
     latency_ms: Mapped[int | None]
     stop_reason: Mapped[str | None]
     trace_id: Mapped[str | None]
@@ -191,6 +218,7 @@ class ToolCall(Base):
     id: Mapped[uuid.UUID] = _pk()
     step_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("role_steps.id"), index=True)
     tool: Mapped[str]
+    call_id: Mapped[str | None]  # the model's tool-call id
     args_redacted: Mapped[dict[str, Any]] = mapped_column(
         postgresql.JSONB, server_default=_EMPTY_JSON
     )

@@ -9,6 +9,11 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.1",
+    "anthropic>=2.6,<3",
+    "httpx2>=2.16,<3",
+    "jsonschema>=4.26,<5",
+    "openai>=3.46,<4",
+    "opentelemetry-api>=1.45,<2",
     "psycopg[binary]>=3.2",
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.2",
@@ -33,9 +38,11 @@ members = [
 
 [dependency-groups]
 dev = [
+    "anyio>=4.10",
     "bandit>=1.9.4",
     "hypothesis>=6.170.15",
     "mypy>=2.4.1",
+    "opentelemetry-sdk>=1.45,<2",
     "pip-audit>=2.10.1",
     "pre-commit>=4.7.0",
     "pytest>=9.2.0",
@@ -44,6 +51,7 @@ dev = [
     "pyyaml>=6.0.3",
     "ruff>=0.17.4",
     "time-machine>=3.6.0",
+    "types-jsonschema>=4.26",
     "types-pyyaml>=6.0.12.20261103",
 ]
 
@@ -72,7 +80,7 @@ markers = [
     "integration: needs Postgres",
     "live: needs real API keys",
 ]
-addopts = "-ra --strict-markers -p pytester --ignore=tests/repo_hygiene/fixtures"
+addopts = "-ra --strict-markers -p pytester --ignore=tests/repo_hygiene/fixtures -m \"not live\""
 
 [tool.coverage.report]
 fail_under = 85

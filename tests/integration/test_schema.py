@@ -257,7 +257,7 @@ def test_defaults_and_check_constraints(app_engine, repo_id):
             )
         ).one()
     assert (row.priority, row.version, row.attempt) == (100, 0, 0)
-    assert str(row.budget_usd) == "5.0000" and row.spent_usd == 0 and row.risk_level is None
+    assert str(row.budget_usd) == "5.000000" and row.spent_usd == 0 and row.risk_level is None
     with pytest.raises(sa.exc.IntegrityError), app_engine.begin() as c:
         c.execute(ins, {"r": repo_id, "s": "bogus"})
     with pytest.raises(sa.exc.IntegrityError), app_engine.begin() as c:

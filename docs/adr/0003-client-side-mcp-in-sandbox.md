@@ -1,6 +1,7 @@
 # ADR-0003: Client-side MCP, server in a per-role-step sandbox
 
 - Status: accepted
+- Amended by ADR-0004 (provider layer).
 - Date: 2026-11-06
 
 ## Context
@@ -21,6 +22,6 @@ The orchestrator is the MCP **client**. The MCP **server**, the minimal `quartet
 
 - The tool-executing process has no network and no credentials; a hijacked agent can damage only its own worktree.
 - One container start per role step adds latency, and macOS Docker runs in a VM, so UID and mount behaviour differ from Linux CI and must be tested on both.
-- The client must adapt MCP tools to each vendor's tool format; Phase 3 verifies the Anthropic helper against the pinned `mcp` version, with a small hand-written adapter as fallback.
+- The client must adapt MCP tools to each vendor's tool format; Phase 3 converts MCP tool definitions into strict `ToolSpec`s that fit `check_strict_budget` (ADR-0004).
 - Lease enforcement at the tool layer is advisory-plus-enforced, and is complemented by post-step diff verification in the orchestrator (FR-7).
 - This is planned work (Phase 3); it does not exist yet.

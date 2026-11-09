@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from quartet.db.models import Artifact, Event, Handover, Repo, Task
 from quartet.db.repository import (
+    ArtifactTooLarge,
     UntrustedInputError,
     UntrustedInputInvalid,
     UntrustedInputTooLarge,
@@ -304,3 +305,42 @@ def test_nul_bytes_are_stripped(app_session, repo_id):  # Postgres text cannot s
     tid = create_task(app_session, repo_id, "manual", "r#6", "t\x00x", "a\x00b")
     t = app_session.get(Task, tid)
     assert (t.title, t.body_untrusted) == ("tx", "ab")
+
+
+def _plan_of(step_count: int, text_len: int = 16_000) -> Plan:
+    from quartet.domain.artifacts import PlanStep
+
+    return Plan(
+        schema_version=1,
+        summary="s" * text_len,
+        steps=[PlanStep(description="d" * text_len, files=[]) for _ in range(step_count)],
+        predicted_files=[],
+        acceptance_criteria=[],
+        test_strategy="t",
+        risk_level="low",
+        out_of_scope_reason=None,
+    )
+
+
+def test_artifact_over_256_kib_rejected(app_session, make_tasks):
+    from quartet.db.repository import ARTIFACT_MAX_BYTES
+
+    (task_id,) = make_tasks(n=1)
+    with pytest.raises(ArtifactTooLarge) as exc:
+        save_artifact(app_session, task_id, _plan_of(20))
+    assert str(ARTIFACT_MAX_BYTES) in str(exc.value) and "ddd" not in str(exc.value)
+    assert issubclass(ArtifactTooLarge, ValueError)
+
+
+def test_task_artifact_total_capped(app_session, make_tasks):
+    (task_id,) = make_tasks(n=1)
+    plan = _plan_of(15)  # ~250 KiB compact: under the per-artifact cap
+    for _ in range(16):
+        save_artifact(app_session, task_id, plan)
+    with pytest.raises(ArtifactTooLarge) as exc:
+        save_artifact(app_session, task_id, plan)
+    assert "ddd" not in str(exc.value) and "sss" not in str(exc.value)
+    assert "4194304" in str(exc.value)
+    # Another task is unaffected.
+    (other,) = make_tasks(n=1)
+    save_artifact(app_session, other, plan)

@@ -1,6 +1,7 @@
 # ADR-0001: Hand-rolled orchestration core
 
 - Status: accepted
+- Provider-layer clause superseded by ADR-0004: Quartet uses its own vendor-neutral tool loop for both vendors.
 - Date: 2026-11-06
 
 ## Context

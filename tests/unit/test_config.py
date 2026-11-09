@@ -210,3 +210,13 @@ def test_migrator_db_url_defaults_to_none_and_is_validated(monkeypatch):
     with pytest.raises(InvalidSettings) as ei:
         load_settings()
     assert "QUARTET_MIGRATOR_DATABASE_URL" in str(ei.value) and "hunter2" not in str(ei.value)
+
+
+def test_empty_env_values_are_ignored(tmp_path):  # R38
+    env = tmp_path / ".env"
+    env.write_text(
+        "QUARTET_DATABASE_URL=postgresql://u:p@127.0.0.1:5432/quartet\n"
+        "QUARTET_MIGRATOR_DATABASE_URL=\n"
+    )
+    env.chmod(0o600)
+    assert load_settings(env).migrator_database_url is None

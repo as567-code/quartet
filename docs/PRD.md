@@ -119,12 +119,12 @@ Priority: **P0** is required for v1 and the resume claims. **P1** is strongly de
     - the mirror at `/mirror` (RO);
     - the task's lease directory at `/quartet` (RO).
   - The container sets `GIT_DIR=/mirror/worktrees/<task_id>` and `GIT_WORK_TREE=/work`. The admin dir's `commondir` is relative, so git resolves the common dir correctly. The image's `/etc/gitconfig` sets `safe.directory=*`, which is acceptable because the container only ever sees Quartet's own mounts. On Linux the container runs as the host UID:GID, so files keep their owner.
-  - The orchestrator is the MCP client. On the Anthropic side, the per-role loop uses the SDK tool runner (`client.beta.messages.tool_runner`) with MCP tools converted by `anthropic.lib.tools.mcp.async_mcp_tool`. Phase 3 verifies this against the pinned `mcp` version, with a small hand-written adapter as the fallback. On the OpenAI side, MCP tool definitions are translated into Responses API function tools.
+  - The orchestrator is the MCP client. The per-role loop is Quartet's own tool loop for both vendors (ADR-0004). Phase 3 converts MCP tool definitions into strict `ToolSpec`s, and each vendor adapter sends them in its own tool format: strict tools on Anthropic, flat function tools on OpenAI.
   - Role allowlists are enforced **twice**: by the client-side filter, and by the server's `--role` flag.
   - The server-side Anthropic MCP connector (`mcp_servers`) is deliberately **not** used, because it reaches only remote URL servers (ADR-0003).
 - **FR-14 (P0)** Agents **never** receive git-push, GitHub, network or arbitrary-shell tools. `git_log` and `git_diff` take **no ref arguments**: they are fixed to `<base_sha>..HEAD` of the task's own worktree. `run_tests` and `run_check` run a fixed allowlist of executables with argument vectors (no shell, no operators). Commits, pushes and PRs are orchestrator actions.
 - **FR-15 (P0)** Every artifact is a versioned Pydantic v2 model. **One** model source emits the strict JSON Schema for both vendors (`additionalProperties: false`, every field `required`, optional fields as `T | None` with no default):
-  - Anthropic uses structured outputs (`output_config.format` / `client.messages.parse()`) and `strict: true` tools.
+  - Anthropic uses structured outputs (`output_config.format`, with Quartet's own schema and client-side validation; not `parse()` or `transform_schema`, which turn `const` into a description) and `strict: true` tools.
   - OpenAI uses `text.format` json_schema with `strict` and strict function tools.
   - An invalid or refused artifact counts as a role failure. It is retried at most twice, then the task moves to `NEEDS_HUMAN`.
 - **FR-16 (P0)** **Budgets and circuit breakers.** Each role step has hard caps on wall-clock time, LLM turns, tool calls, tokens and USD. Each task has a USD cap and `max_fix_rounds = 3`, which counts test-failure loops and review loops together. A global kill switch exists (`quartet stop --all`). Any breach moves the task to `NEEDS_HUMAN` with a hand-over note. Breaches are **never** silently retried.
@@ -227,12 +227,13 @@ Cost per completed task (USD), median wall-clock time, tokens by role and model,
   - *Self-authored split:* a fresh container is started from the task's sandbox image, the task's diff is applied to the base commit, and the hidden tests are copied in. The tests run with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -c <harness>/pytest.ini --rootdir <harness> --noconftest -p no:cacheprovider`, so PR-supplied pytest configuration, conftest files and plugins cannot affect the verdict. Hidden tests are written to be self-contained.
   - *SWE-bench split:* judged by the **official `swebench` harness**.
 - Pin everything in each result file (FR-31). Keep **every** run in `eval/results/`, including bad ones. The report lists all runs.
+- **Fallback.** Eval configurations run with server-side fallback off; every call answered by a model other than the configured one is counted and reported.
 - **Variance (optional):** 2 extra `full` repeats on a seeded 15-task subset of `scoped-60`. They are reported separately and never replace a first-pass result.
 - Rates get Wilson 95% intervals. Per-task and per-batch means get bootstrap 95% intervals.
 - **If a target is missed, the resume shows the measured number** (for example, "58% (95% CI 46–70%) first-pass completion on 60 scoped issues"), or the bullet is reworded. This rule is not negotiable.
 
 ### 7.4 Budget (estimate; Phase 5 measures the real cost per task)
-Prices: Opus 5.5 at $4 per million input tokens and $20 per million output, cache reads $0.20 per million (Anthropic reference, 2026-10). `gpt-6.1-sol` at $2/$10 per million (third-party report; verify in Phase 2). With prompt caching and four roles, the working estimate is **$2–4 per task-run**.
+Prices: Opus 5.5 at $4 per million input tokens and $20 per million output, cache reads $0.20 per million (Anthropic reference, 2026-10). `gpt-6.1-sol` at $2/$10 per million (standard tier; requests above 272,000 input tokens use long-context rates), cache reads $0.10, and cache writes billed at 1.25× input for 30 minutes or 2.5× for 12 hours (OpenAI pricing page, retrieved 2026-11-06). Opus 5.5 re-checked at $4/$20 and $0.20 (Anthropic pricing page, retrieved 2026-11-07 UTC). With prompt caching and four roles, the working estimate is **$2–4 per task-run**.
 
 | Line | Task-runs | Core? |
 |---|---|---|
@@ -376,18 +377,18 @@ Claim index: `ix_tasks_claimable ON tasks (priority, created_at) WHERE lease_own
 One internal interface, `RoleRunner.run(role_config, handover_input, tools) -> RoleResult` (artifact + usage + trace ID), with two adapters:
 
 **Anthropic** (`anthropic` SDK):
-- Messages API through the beta tool runner, `strict: true` tools and structured outputs.
+- Messages API (beta client, for `fallbacks` and `usage.iterations`) through Quartet's own loop (ADR-0004), with `strict: true` tools and structured outputs.
 - Adaptive thinking is the default on Opus 5.5, so the adapter does not send a `thinking` disable. Effort is set per role through `output_config.effort`; it must be set explicitly because Opus 5.5 defaults to `medium`.
 - **Never** send `temperature`/`top_p`/`top_k`, and **never** prefill.
 - `tool_choice` is `auto` only, because forced tool choice returns a 400 on Opus 5.5 and Sonnet 5.5.
-- Streaming for long turns with `eager_input_streaming: true` on client tools, each parsed input validated against its schema.
-- Handle the `refusal` stop reason and enable server-side `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`).
+- Streaming for long turns, read to the final message. `eager_input_streaming` is not used; every tool input is validated client-side against its schema (ADR-0004).
+- Handle the `refusal` stop reason. Server-side `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`) is a per-role flag, off in eval configs (§7.3).
 - Byte-stable tools and system prompt per role, with the issue text last, so prompt caching works. `usage.cache_read_input_tokens` is checked in tests.
 - Parallel tool results are returned in one user message, with `is_error` set on failures.
 
 **OpenAI** (`openai` SDK, Responses API):
 - Flat function tools (`{type:"function", name, parameters, strict:true}`). `function_call` items are answered with `function_call_output` keyed by `call_id`.
-- Continuation resends the input list, so Quartet keeps the full transcript itself. `previous_response_id` is optional.
+- Streamed over the raw event stream, with `store=False`. Quartet keeps the transcript itself, including reasoning items, and resends it on each continuation; `previous_response_id` is not used.
 - Structured output through `text.format` json_schema strict, and the `reasoning` effort set per role.
 
 **FakeProvider** replays recorded turns so every unit and integration test runs without API keys. `quartet llm smoke` proves that each vendor accepts every artifact schema, including `schema_version` (emitted as `const`).
@@ -423,9 +424,12 @@ docs/ PRD.md · ROADMAP.md · THREAT_MODEL.md · EVAL_PROTOCOL.md · adr/ · pla
 | Packaging | `uv` workspace (`quartet` + `quartet-workspace`) + `uv.lock` | Reproducible. The sandbox image ships only the minimal package. |
 | DB | PostgreSQL 16 (Docker) · SQLAlchemy 2.0 typed ORM · psycopg 3 · Alembic | Typed models + real migrations. Explicit SQL for the queue. |
 | Orchestration | **Hand-written** state machine, worker loop, leases and recovery | Anti-goal §3. Temporal, LangGraph and the Agent SDKs were considered and rejected (ADR-0001). |
-| Per-role tool loop | Anthropic SDK tool runner. A custom loop for OpenAI. | Thin helpers below the orchestration core |
+| Per-role tool loop | Quartet's own vendor-neutral loop over both SDKs (ADR-0004) | Budget gate before every call, the step clock before every retry; one validation and redaction path for both vendors |
 | MCP | Official `mcp` Python SDK v2 (`mcp>=2,<3`, 2.0.0 released 2026-07-28; `MCPServer`, `Client`, stdio). The in-memory `Client` is used for tests. | Matches the resume. Current major version. |
 | Schemas | Pydantic v2 | One source of truth for artifacts and both vendors' strict schemas |
+| Tool-input validation | `jsonschema` (Draft 2020-12) | Every tool input is checked before a tool runs |
+| HTTP | `httpx2` (direct dependency; both vendor SDKs use it) | Test transports are `httpx2` transports |
+| Span API | `opentelemetry-api` (the SDK is a dev dependency only) | Spans need only the API |
 | CLI | Typer | Simple and typed |
 | Sandbox | Docker via CLI subprocess with an argument vector (no shell) | Already installed. Flags are easy to assert in tests. |
 | GitHub | GitHub App + `githubkit` | Least privilege, short-lived tokens |

@@ -1,0 +1,58 @@
+# USD per 1M tokens, Standard tier. Prices are strings on purpose: they become Decimal.
+# Anthropic page is undated; retrieved dates are the day each page was read.
+
+[models."claude-opus-5-5"]
+provider = "anthropic"
+input = "4.00"
+cache_read = "0.20"
+cache_write_short = "5.00"
+cache_write_long = "8.00"
+output = "20.00"
+source_url = "https://platform.claude.com/docs/en/about-claude/pricing"
+retrieved = 2026-11-07
+
+[models."claude-sonnet-5-5"]
+provider = "anthropic"
+input = "2.00"
+cache_read = "0.10"
+cache_write_short = "2.50"
+cache_write_long = "4.00"
+output = "10.00"
+source_url = "https://platform.claude.com/docs/en/about-claude/pricing"
+retrieved = 2026-11-07
+
+[models."gpt-6.1-sol"]
+provider = "openai"
+input = "2.00"
+cache_read = "0.10"
+cache_write_short = "2.50"
+cache_write_long = "5.00"
+output = "10.00"
+source_url = "https://developers.openai.com/api/docs/pricing"
+retrieved = 2026-11-06
+
+[models."gpt-6.1-sol".long_context]
+threshold_tokens = 272000
+input = "4.00"
+cache_read = "0.20"
+cache_write_short = "5.00"
+cache_write_long = "10.00"
+output = "15.00"
+
+[models."gpt-6-astra"]
+provider = "openai"
+input = "10.00"
+cache_read = "1.00"
+cache_write_short = "12.50"
+cache_write_long = "25.00"
+output = "50.00"
+source_url = "https://developers.openai.com/api/docs/pricing"
+retrieved = 2026-11-06
+
+[models."gpt-6-astra".long_context]
+threshold_tokens = 272000
+input = "20.00"
+cache_read = "2.00"
+cache_write_short = "25.00"
+cache_write_long = "50.00"
+output = "75.00"
